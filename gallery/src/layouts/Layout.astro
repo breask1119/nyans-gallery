@@ -1,0 +1,82 @@
+---
+// src/layouts/Layout.astro
+/**
+ * サイト全体の共通レイアウトコンポーネントです。
+ * ViewTransitionsによるシームレスな画面遷移と、PWAとしてのメタデータ・Service Workerの登録をサポートします。
+ * SEOやAI検索（SGE/AIO）向けの動的メタデータも統合しています。
+ */
+import { ClientRouter } from 'astro:transitions';
+import '../styles/app.scss';
+
+interface Props {
+  title: string;
+  description?: string;
+  image?: string;
+  url?: string;
+}
+
+// ページごとにプロパティを受け取り、未指定の場合はデフォルト値を使用します。
+const { 
+  title,
+  description = "Tactile Maximalism & Bento Grid Gallery",
+  image = "/favicon.png",
+  url = Astro.site ? Astro.site.toString() : Astro.url.href
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="ja" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="description" content={description} />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    
+    <!-- PWA / モバイル向けのメタ設定です。 -->
+    <meta name="theme-color" content="#050505" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Miu's Gallery" />
+    
+    <!-- ファビコンとPWAアイコンの設定です（PNG形式）。 -->
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+
+    <!-- SEO / OGP / Twitter Cardの設定です。 -->
+    <link rel="canonical" href={url} />
+    <meta property="og:site_name" content="Miu's Gallery" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={url} />
+    <meta property="og:image" content={image} />
+    
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={image} />
+    
+    <title>{title}</title>
+    <ClientRouter />
+
+    <!-- Service Workerの登録とキャッシュ自動更新処理です。 -->
+    <script>
+      import { registerSW } from 'virtual:pwa-register';
+      
+      // ブラウザがService Workerをサポートしている場合のみ実行します。
+      if ('serviceWorker' in navigator) {
+        const updateSW = registerSW({
+          immediate: true,
+          onNeedRefresh() {
+            // 新しいビルドがデプロイされた際、古いキャッシュを破棄して強制リフレッシュします。
+            // これにより、変更が反映されないキャッシュ問題を防ぎます。
+            updateSW(true);
+          }
+        });
+      }
+    </script>
+  </head>
+  <body class="bg-[#050505] text-gray-200 antialiased selection:bg-[#F43F5E] selection:text-white">
+    <slot />
+  </body>
+</html>

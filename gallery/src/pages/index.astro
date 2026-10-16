@@ -1,0 +1,3086 @@
+---
+// src/pages/index.astro
+import { ClientRouter } from 'astro:transitions';
+import '../styles/gallery.css';
+import '../styles/app.scss';
+import { getGalleryData, DEFAULT_WP_GRAPHQL_URL } from '../lib/wp';
+
+// 1. WordPress (WPGraphQL + REST API ハイブリッド) からデータ取得
+const { siteInfo, sliders, models: rawModels, latestArtwork, debugLog } = await getGalleryData();
+
+// 画像URLのHTTPS化およびWordPressオリジン正規化ヘルパー
+const wpGraphqlUrl = (import.meta.env.PUBLIC_WP_GRAPHQL_URL || DEFAULT_WP_GRAPHQL_URL || '').trim();
+const secureUrl = (url: string) => {
+  if (!url) return '';
+  let httpsUrl = url.replace(/^http:\/\//i, 'https://');
+  if (wpGraphqlUrl && !httpsUrl.includes('unsplash.com')) {
+    try {
+      const wpOrigin = new URL(wpGraphqlUrl).origin;
+      const urlObj = new URL(httpsUrl);
+      if (urlObj.origin !== wpOrigin) {
+        urlObj.protocol = new URL(wpOrigin).protocol;
+        urlObj.hostname = new URL(wpOrigin).hostname;
+        urlObj.port = new URL(wpOrigin).port;
+        return urlObj.toString();
+      }
+    } catch (e) {}
+  }
+  return httpsUrl;
+};
+
+const placeholderImg = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1200&auto=format&fit=crop";
+
+const getValidColor = (color: string) => (color && color.trim() !== '') ? color : '#F43F5E';
+
+const hexToRgbString = (hex: string) => {
+  const validHex = getValidColor(hex);
+  let cleanHex = validHex.replace('#', '');
+  if (cleanHex.length === 3) {
+    cleanHex = cleanHex.split('').map(c => c + c).join('');
+  }
+  const r = parseInt(cleanHex.substring(0, 2), 16) || 0;
+  const g = parseInt(cleanHex.substring(2, 4), 16) || 0;
+  const b = parseInt(cleanHex.substring(4, 6), 16) || 0;
+  return `${r}, ${g}, ${b}`;
+};
+
+// キャラクター名と英字の対応表（全12モデル対応、表記揺れ対応）
+const characterNameMap: Record<string, string> = {
+  "美羽": "Miu",
+  "美夜": "Miya",
+  "美姫": "Miki",
+  "美桜": "Mio",
+  "美空": "Miku",
+  "美玖": "Miku",
+  "美英": "Miei",
+  "美詠": "Miei",
+  "美香": "Mika",
+  "美華": "Mika",
+  "美緑": "Midori",
+  "美鳥": "Midori",
+  "未来": "Mirai",
+  "美莱": "Mirai",
+  "美柚": "Miyuzu",
+  "美ゆず": "Miyuzu",
+  "美登": "Mito",
+  "美豊": "Mito",
+  "雪": "Yuki",
+  "ユキ": "Yuki",
+};
+
+const slugNameMap: Record<string, string> = {
+  "miu": "Miu",
+  "miya": "Miya",
+  "miki": "Miki",
+  "mio": "Mio",
+  "miku": "Miku",
+  "miei": "Miei",
+  "mika": "Mika",
+  "midori": "Midori",
+  "mirai": "Mirai",
+  "miyuzu": "Miyuzu",
+  "mito": "Mito",
+  "yuki": "Yuki",
+};
+
+// モデル名を「漢字 / アルファベット (例: 美羽 / Miu)」に整形するヘルパー
+const formatModelDisplayName = (name: string, slug?: string) => {
+  if (!name) return '';
+  const clean = name.trim();
+  if (clean.includes('/')) return clean;
+
+  if (characterNameMap[clean]) {
+    return `${clean} / ${characterNameMap[clean]}`;
+  }
+
+  if (slug) {
+    const en = slug.charAt(0).toUpperCase() + slug.slice(1).toLowerCase();
+    if (!clean.toLowerCase().includes(slug.toLowerCase())) {
+      return `${clean} / ${en}`;
+    }
+  }
+
+  return clean;
+};
+
+// タイトルHTML（漢字とアルファベットを別々のspanにして細身の洗練されたタイポグラフィを適用）
+const formatTitleHtml = (displayName: string) => {
+  if (!displayName) return '';
+  if (displayName.includes(' / ')) {
+    const [kanji, romaji] = displayName.split(' / ');
+    return `<span class="char-kanji">${kanji}</span><span class="char-divider">/</span><span class="char-romaji">${romaji}</span>`;
+  }
+  return `<span class="char-kanji">${displayName}</span>`;
+};
+
+// キャラクター英名取得ヘルパー（バッジ表示用）
+const getRomajiName = (name: string, slug?: string) => {
+  if (!name) return 'Miu';
+  if (name.includes(' / ')) return name.split(' / ')[1].trim();
+  const clean = name.trim();
+  if (characterNameMap[clean]) return characterNameMap[clean];
+  const lower = clean.toLowerCase();
+  if (slugNameMap[lower]) return slugNameMap[lower];
+  if (slug && slugNameMap[slug.toLowerCase()]) return slugNameMap[slug.toLowerCase()];
+  if (slug && slug !== 'featured') return slug.charAt(0).toUpperCase() + slug.slice(1).toLowerCase();
+  return clean.charAt(0).toUpperCase() + clean.slice(1);
+};
+
+// WordPressのデータを home-version の 3-Tier UI 用データ構造へ統合変換
+// (新方式: artwork_image / 旧方式: variation_images を work.photos に一元化)
+const formattedGalleryData = (rawModels && rawModels.length > 0)
+  ? rawModels.map((model: any) => {
+      const modelId = model.slug || model.id || `model-${Math.random().toString(36).substring(2, 7)}`;
+      const displayName = formatModelDisplayName(model.name, model.slug);
+      const originalColor = getValidColor(model.memberColor);
+      const originalRgb = hexToRgbString(originalColor);
+      const avatarSrc = secureUrl(model.modelAvatar?.node?.sourceUrl) || placeholderImg;
+
+      const rawArtworks = model.artworks?.nodes || [];
+      const works = rawArtworks.map((art: any, artIdx: number) => {
+        const workId = art.slug || art.id || `${modelId}-work-${artIdx + 1}`;
+        const dbId = art.databaseId || 0;
+
+        // wp.ts 内で正規化済みの normalizedImages を優先使用
+        let photos: any[] = [];
+        if (art.normalizedImages && Array.isArray(art.normalizedImages)) {
+          photos = art.normalizedImages.map((img: any, pIdx: number) => ({
+            id: `${dbId || workId}-${img.id || pIdx}`,
+            title: img.title || `${art.title} #${String(pIdx + 1).padStart(2, '0')}`,
+            image: secureUrl(img.sourceUrl) || placeholderImg,
+            workTitle: art.title,
+            modelName: displayName,
+            characterId: modelId,
+            contentRating: img.contentRating || 'safe',
+            sortOrder: img.sortOrder,
+            distribution: img.distribution,
+          }));
+        } else {
+          // 旧方式フォールバック
+          const cover = secureUrl(art.featuredImage?.node?.sourceUrl) || avatarSrc;
+          const varImages = art.orderedImages || art.variationImages?.nodes || [];
+          const orderedVarImages = [...varImages].reverse();
+          const imgUrls = orderedVarImages.length > 0 ? orderedVarImages.map((v: any) => secureUrl(typeof v === 'string' ? v : v.sourceUrl)) : [cover];
+          photos = imgUrls.map((url: string, pIdx: number) => ({
+            id: `${dbId || workId}-${pIdx}`,
+            title: `${art.title} #${String(pIdx + 1).padStart(2, '0')}`,
+            image: url,
+            workTitle: art.title,
+            modelName: displayName,
+            characterId: modelId,
+            contentRating: 'safe',
+            sortOrder: pIdx + 1,
+            distribution: { instagram: true, threads: true, x: true, patreon: 'public' },
+          }));
+        }
+
+        // 万が一 photos が0件の場合のセーフティネット（カバー画像を1枚目として補充）
+        if (photos.length === 0) {
+          const fallbackCover = secureUrl(art.featuredImage?.node?.sourceUrl) || avatarSrc;
+          photos = [{
+            id: `${dbId || workId}-fallback-0`,
+            title: art.title,
+            image: fallbackCover,
+            workTitle: art.title,
+            modelName: displayName,
+            characterId: modelId,
+            contentRating: 'safe',
+            sortOrder: 1,
+            distribution: { instagram: true, threads: true, x: true, patreon: 'public' },
+          }];
+        }
+
+        const coverImage = photos.length > 0 ? photos[0].image : (secureUrl(art.featuredImage?.node?.sourceUrl) || avatarSrc);
+
+        return {
+          id: workId,
+          databaseId: dbId,
+          title: art.title,
+          slug: art.slug,
+          coverImage: coverImage,
+          photos: photos,
+          likeCount: art.likeCount || 0,
+          guestComments: art.guestComments || [],
+          promptData: art.promptData || '',
+          hasArtworkImages: Boolean(art.hasArtworkImages),
+
+          // AIタグ
+          aiSummary: art.aiAnalysis?.summary || '',
+          aiTags: Array.isArray(art.aiTags) ? art.aiTags : [],
+          aiAnalysis: art.aiAnalysis || null,
+          hasAiTags: Boolean(art.hasAiTags),
+        };
+      });
+
+      return {
+        id: modelId,
+        dbId: model.id,
+        name: displayName,
+        rawName: model.name,
+        color: originalColor,
+        rgb: originalRgb,
+        avatar: avatarSrc,
+        bio: model.modelBio || '',
+        works: works,
+      };
+    })
+  : [];
+
+// 最新投稿（最新作）のアイキャッチ画像・タイトル情報の構築
+let latestSlideItem: any = null;
+
+if (latestArtwork) {
+  const modelNode = latestArtwork.models?.nodes?.[0];
+  const matchedModel = rawModels?.find((m: any) =>
+    m.name === modelNode?.name || m.slug === modelNode?.slug
+  ) || rawModels?.[0];
+
+  const mName = matchedModel?.name || modelNode?.name || "美羽";
+  const mSlug = matchedModel?.slug || modelNode?.slug || "miu";
+  const mColor = getValidColor(matchedModel?.memberColor || modelNode?.memberColor);
+  const featImg = secureUrl(latestArtwork.featuredImage?.node?.sourceUrl) || placeholderImg;
+
+  latestSlideItem = {
+    id: `slider-latest-${latestArtwork.databaseId || latestArtwork.id || 'new'}`,
+    title: latestArtwork.title || '最新作',
+    workTitle: latestArtwork.title || '最新作',
+    image: featImg,
+    modelName: formatModelDisplayName(mName, mSlug),
+    characterId: mSlug,
+    workId: latestArtwork.slug || latestArtwork.title || (latestArtwork.databaseId ? String(latestArtwork.databaseId) : 'latest'),
+    color: mColor,
+    rgb: hexToRgbString(mColor),
+    isLatestPost: true,
+  };
+} else if (formattedGalleryData.length > 0 && formattedGalleryData[0].works.length > 0) {
+  const firstModel = formattedGalleryData[0];
+  const firstWork = firstModel.works[0];
+  latestSlideItem = {
+    id: `slider-latest-${firstWork.databaseId || firstWork.id}`,
+    title: firstWork.title,
+    workTitle: firstWork.title,
+    image: firstWork.coverImage || placeholderImg,
+    modelName: firstModel.name,
+    characterId: firstModel.id,
+    workId: firstWork.id,
+    color: firstModel.color,
+    rgb: firstModel.rgb,
+    isLatestPost: true,
+  };
+}
+
+// ベースのスライダー用データ（各モデル紹介スライダー）
+const baseSliders = (sliders && sliders.length > 0)
+  ? sliders.map((s: any, idx: number) => {
+      const src = secureUrl(s.featuredImage?.node?.sourceUrl) || placeholderImg;
+      const sColor = getValidColor(s.memberColor);
+      const matchedModel = rawModels?.find((m: any) => m.name === s.title || m.slug === s.title);
+      const displayName = matchedModel
+        ? formatModelDisplayName(matchedModel.name, matchedModel.slug)
+        : (s.title ? formatModelDisplayName(s.title) : "美羽 / Miu");
+      return {
+        id: `slider-${idx}`,
+        title: s.title || 'Featured',
+        image: src,
+        workTitle: s.title || 'Featured',
+        modelName: displayName,
+        characterId: matchedModel?.slug || 'featured',
+        color: sColor,
+        rgb: hexToRgbString(sColor),
+        isLatestPost: false,
+      };
+    })
+  : formattedGalleryData.map((c: any) => {
+      const firstWork = c.works[0] || {};
+      const firstPhoto = firstWork.photos?.[0] || { id: c.id, title: c.name, image: c.avatar };
+      return {
+        ...firstPhoto,
+        characterId: c.id,
+        modelName: c.name,
+        workTitle: firstWork.title || c.name,
+        color: c.color,
+        rgb: c.rgb,
+        isLatestPost: false,
+      };
+    });
+
+// トップ画面の自動スライダー用データ: 1枚目に「最新投稿（アイキャッチ画像＆タイトル）」を確実に配置！
+const heroSliderList = latestSlideItem
+  ? [latestSlideItem, ...baseSliders]
+  : baseSliders;
+
+// 全写真フラット配列（EXPLOREモードおよび全画面モーダル用）
+const allPhotosFlat = formattedGalleryData.flatMap((model: any) =>
+  model.works.flatMap((work: any) =>
+    work.photos.map((photo: any) => ({
+      ...photo,
+      characterId: model.id,
+      modelName: model.name,
+      modelColor: model.color,
+      modelRgb: model.rgb,
+      workId: work.id,
+      workTitle: work.title,
+      databaseId: work.databaseId,
+      aiTags: work.aiTags || [],
+      aiSummary: work.aiSummary || '',
+      hasAiTags: work.hasAiTags,
+    }))
+  )
+);
+
+// HTMLエンティティデコード
+const decodeHtmlEntities = (str: string) => {
+  if (!str) return '';
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&#8217;/g, '’')
+    .replace(/&#8216;/g, '‘');
+};
+
+const siteTitle = decodeHtmlEntities(siteInfo?.title) || "Miu's Gallery — Fine Photography & Character Archive";
+const siteDescription = decodeHtmlEntities(siteInfo?.description) || "枠にとらわれないダイナミックな写真レイアウトと、各キャラクター作品へのシームレスなアクセス性を追求した次世代フォトギャラリー。";
+const siteUrl = Astro.site ? Astro.site.toString() : "https://xx-ai-girls-miu.com/";
+const ogImageUrl = heroSliderList[0]?.image || placeholderImg;
+
+const schemaLD = {
+  "@context": "https://schema.org",
+  "@type": "ImageGallery",
+  "name": siteTitle,
+  "description": siteDescription,
+  "url": siteUrl,
+  "image": ogImageUrl,
+  "author": {
+    "@type": "Person",
+    "name": "Miu"
+  }
+};
+
+const initialColor = heroSliderList[0]?.color || '#0b0b0b';
+const initialRgb = heroSliderList[0]?.rgb || '11, 11, 11';
+const initialRgbParts = initialRgb.split(',').map((s: string) => parseInt(s.trim(), 10) || 0);
+const initialLuminance = (0.299 * (initialRgbParts[0] || 0) + 0.587 * (initialRgbParts[1] || 0) + 0.114 * (initialRgbParts[2] || 0));
+const initialContrastText = initialLuminance > 145 ? '#060608' : '#ffffff';
+const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' : 'transparent';
+---
+
+<!DOCTYPE html>
+<html lang="ja" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>{siteTitle}</title>
+  <meta name="description" content={siteDescription}>
+  <link rel="canonical" href={siteUrl}>
+
+  <!-- OGP & Twitter Cards -->
+  <meta property="og:site_name" content={siteTitle}>
+  <meta property="og:title" content={siteTitle}>
+  <meta property="og:description" content={siteDescription}>
+  <meta property="og:type" content="website">
+  <meta property="og:url" content={siteUrl}>
+  <meta property="og:image" content={ogImageUrl}>
+  
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content={siteTitle}>
+  <meta name="twitter:description" content={siteDescription}>
+  <meta name="twitter:image" content={ogImageUrl}>
+
+  <!-- PWA & Favicon -->
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#060608">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Miu's Gallery">
+
+  <!-- Fonts (Zen Kaku Gothic New + Outfit + Cinzel + Plus Jakarta Sans) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=Noto+Sans+JP:wght@200;300;400;500&family=Outfit:wght@200;300;400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600&family=Zen+Kaku+Gothic+New:wght@300;400;500&display=swap" rel="stylesheet">
+  
+  <!-- Lucide Icons -->
+  <script is:inline src="https://unpkg.com/lucide@latest"></script>
+  
+  <!-- GSAP CDN -->
+  <script is:inline src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+  <ClientRouter />
+
+  <!-- PWA Service Worker Registration -->
+  <script>
+    import { registerSW } from 'virtual:pwa-register';
+    if ('serviceWorker' in navigator) {
+      registerSW({
+        immediate: true
+        // 閲覧中の突然の強制リロードによるポップアップ消失を防ぐため、即時リロードは行わない
+      });
+    }
+  </script>
+
+  <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+  <script is:inline>
+    window.OneSignalDeferred = window.OneSignalDeferred || [];
+    OneSignalDeferred.push(async function(OneSignal) {
+      if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        return;
+      }
+      await OneSignal.init({
+        appId: "06418ce1-102a-4a7b-a88b-069b594cf919",
+        serviceWorkerPath: "push/onesignal/OneSignalSDKWorker.js",
+        serviceWorkerParam: {
+          scope: "/push/onesignal/"
+        },
+        promptOptions: {
+          slidedown: {
+            prompts: [
+              {
+                type: "push",
+                autoPrompt: true,
+                text: {
+                  actionMessage: "新しいギャラリーが追加されたら通知を受け取りますか？",
+                  acceptButton: "受け取る",
+                  cancelButton: "あとで",
+                },
+                delay: {
+                  pageViews: 1,
+                  timeDelay: 5 
+                }
+              }
+            ]
+          }
+        }
+      });
+    });
+  </script>
+
+  <!-- Schema.org JSON-LD -->
+  <script type="application/ld+json" set:html={JSON.stringify(schemaLD)} />
+
+  <script define:vars={{ wpGraphqlUrl }}>
+    window.WP_GRAPHQL_URL = wpGraphqlUrl;
+  </script>
+
+  <!-- Immediate beforeinstallprompt capture -->
+  <script is:inline>
+    window.__deferredPwaPrompt = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      window.__deferredPwaPrompt = e;
+      if (typeof window.__triggerPwaPrompt === 'function') {
+        window.__triggerPwaPrompt();
+      }
+    });
+  </script>
+
+  <style is:inline define:vars={{ initialColor, initialRgb, initialContrastText, initialBorderLight }}>
+    :root {
+      --char-accent: var(--initialColor);
+      --char-rgb: var(--initialRgb);
+      --char-accent-rgb: var(--initialRgb);
+      --char-glow: rgba(var(--initialRgb), 0.35);
+      --char-accent-text: var(--initialContrastText);
+      --char-accent-border: var(--initialBorderLight);
+    }
+  </style>
+</head>
+<body class="bg-base text-slate-100 selection:bg-rose-500 selection:text-white">
+
+  <!-- Lightweight Dynamic Ambient Background (GPU Accelerated) -->
+  <div id="ambient-aura-layer" class="ambient-aura-layer" aria-hidden="true"></div>
+
+  <!-- Interactive Custom Cursor (PC fine pointer only) -->
+  <div id="custom-cursor" class="custom-cursor" aria-hidden="true">
+    <div class="cursor-dot"></div>
+    <div class="cursor-ring"></div>
+    <span class="cursor-label">EXPAND</span>
+  </div>
+
+  <!-- Floating Top Bar: Logo, Social Links & About Button -->
+  <div class="floating-top-bar" id="floating-top-bar">
+    <div class="floating-brand-group">
+      <a href="#" class="floating-brand-logo" id="brand-home-link" aria-label="Miu's Gallery Home">
+        <span class="brand-sym">✦</span>
+        <span class="brand-text">Miu's <span class="brand-sub">Gallery</span></span>
+      </a>
+
+      <!-- View Mode Switcher (ギャラリー / 無限モード) -->
+      <div class="view-mode-toggle" id="view-mode-toggle" role="tablist" aria-label="閲覧モード切替">
+        <button class="mode-tab-btn active" id="mode-tab-gallery" role="tab" aria-selected="true" data-mode="gallery">ギャラリー</button>
+        <button class="mode-tab-btn" id="mode-tab-explore" role="tab" aria-selected="false" data-mode="explore">無限モード</button>
+      </div>
+
+      <div class="floating-social-links">
+        <!-- X (Twitter) -->
+        <a href="https://x.com/xx_ai_girls_miu" target="_blank" rel="noopener noreferrer" class="social-icon-btn x-btn" aria-label="X (Twitter)">
+          <svg class="social-svg-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+          </svg>
+        </a>
+
+        <!-- Instagram -->
+        <a href="https://www.instagram.com/xx.ai.girls.miu0402/" target="_blank" rel="noopener noreferrer" class="social-icon-btn instagram-btn" aria-label="Instagram">
+          <svg class="social-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect>
+            <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path>
+            <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line>
+          </svg>
+        </a>
+
+        <!-- Patreon -->
+        <a href="https://www.patreon.com/cw/u73055670?utm_medium=unknown&utm_source=join_link&utm_campaign=creatorshare_creator&utm_content=copyLink" target="_blank" rel="noopener noreferrer" class="social-icon-btn patreon-btn" aria-label="Patreon">
+          <svg class="social-svg-icon patreon-new-logo" viewBox="0 0 1080 1080" fill="currentColor" aria-hidden="true">
+            <path d="M1033.05,324.45c-0.19-137.9-107.59-250.92-233.6-291.7c-156.48-50.64-362.86-43.3-512.28,27.2 C106.07,145.41,49.18,332.61,47.06,519.31c-1.74,153.5,13.58,557.79,241.62,560.67c169.44,2.15,194.67-216.18,273.07-321.33 c55.78-74.81,127.6-95.94,216.01-117.82C929.71,603.22,1033.27,483.3,1033.05,324.45z"></path>
+          </svg>
+        </a>
+
+        <!-- About Modal Open Button -->
+        <button id="info-open-btn" class="social-icon-btn" aria-label="ギャラリーについて">
+          <svg class="social-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="16" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12.01" y2="8"></line>
+          </svg>
+        </button>
+
+        <!-- PWA Install / Home Button -->
+        <button id="header-pwa-btn" class="social-icon-btn pwa-header-install-btn" aria-label="アプリとしてホーム画面に追加" title="ホーム画面に追加">
+          <svg class="social-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
+            <line x1="12" y1="18" x2="12.01" y2="18"></line>
+            <polyline points="9 9 12 12 15 9"></polyline>
+            <line x1="12" y1="6" x2="12" y2="12"></line>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       APP MAIN: 100dvh VIEWPORT APP
+       PC: Left (70%) Main Visual + Right (30%) 3-Tier Navigation Panel
+       Mobile: Top Main Visual + Bottom Interactive Deck
+       ============================================================ -->
+  <main class="app-viewport-container">
+
+    <!-- LEFT / TOP PANE: DYNAMIC MAIN VISUAL STAGE -->
+    <section class="main-visual-stage" id="main-visual-stage" aria-label="メイン写真ビュー">
+      
+      <!-- Background Ambient Blur Image Layer -->
+      <div class="stage-blur-layer" id="stage-blur-layer">
+        <img id="stage-blur-img" src={heroSliderList[0]?.image || placeholderImg} alt="" aria-hidden="true">
+      </div>
+
+      <!-- Main High-Res Photo Container (Click to expand) -->
+      <div class="stage-photo-wrapper tilt-element" id="stage-photo-wrapper" data-tilt-intensity="6">
+        <img id="main-stage-img" src={heroSliderList[0]?.image || placeholderImg} alt="Featured Photo" class="main-stage-photo" fetchpriority="high">
+        
+        <!-- Expand Prompt Overlay -->
+        <div class="photo-expand-prompt">
+          <span class="prompt-pill">
+            <i data-lucide="maximize-2" class="w-3.5 h-3.5"></i>
+            <span class="pc-text">{heroSliderList[0]?.isLatestPost ? `VIEW "${heroSliderList[0]?.title}"` : 'CLICK TO VIEW ALBUM'}</span>
+            <span class="sp-text">{heroSliderList[0]?.isLatestPost ? `VIEW "${heroSliderList[0]?.title}"` : 'TAP TO VIEW ALBUM'}</span>
+          </span>
+        </div>
+      </div>
+
+      <!-- Character Name Glassmorphic Badge Capsule -->
+      <div class="stage-title-overlay" id="stage-title-overlay">
+        <div class="stage-char-badge" id="stage-char-badge">
+          <span class="stage-color-chip" id="stage-color-chip" style={`background-color: ${heroSliderList[0]?.color || '#0b0b0b'};`}></span>
+          <h1 class="stage-badge-text" id="stage-badge-name">
+            {heroSliderList[0]?.isLatestPost
+              ? `NEW: ${heroSliderList[0]?.title}`
+              : getRomajiName(heroSliderList[0]?.modelName || "美羽 / Miu", heroSliderList[0]?.characterId)}
+          </h1>
+        </div>
+      </div>
+
+      <!-- Stage Slider Dots (トップページ自動スライダー時のインジケーター) -->
+      <div class="stage-slider-dots active" id="stage-slider-dots" aria-hidden="true"></div>
+
+    </section>
+
+    <!-- RIGHT / BOTTOM PANE: 3-TIER CONTENT & NAVIGATION PANEL -->
+    <aside class="side-content-panel" id="side-content-panel" aria-label="モデル＆作品ナビゲーション">
+      
+      <!-- TIER 1: CHARACTERS LIST (Initial State) -->
+      <div class="panel-view-section active" id="view-characters">
+        <div class="panel-view-header">
+          <div>
+            <h2 class="panel-heading">MODELS & CHARACTERS</h2>
+            <p class="panel-subtext">モデルを選択して作品アルバムへ</p>
+          </div>
+        </div>
+
+        <div class="characters-grid-list" id="characters-grid-list">
+          {formattedGalleryData.map((c: any) => (
+            <button class="char-select-card" data-char-id={c.id} aria-label={`${c.name} の作品アルバムを見る`}>
+              <div class="char-card-media">
+                <img src={c.avatar} alt={c.name} loading="lazy" referrerpolicy="no-referrer">
+                <div class="char-card-color-overlay" style={`background-color: ${c.color};`}></div>
+              </div>
+              <div class="char-card-caption">
+                <div class="char-card-name" set:html={formatTitleHtml(c.name)}></div>
+                <div class="char-card-works-count">{c.works.length} Works</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <!-- TIER 2: WORKS LIST OF SELECTED MODEL -->
+      <div class="panel-view-section" id="view-works">
+        
+        <!-- Back Navigation to Models -->
+        <div class="panel-nav-bar">
+          <button class="panel-back-btn" id="btn-back-to-characters" aria-label="モデル一覧に戻る">
+            <i data-lucide="arrow-left" class="w-4 h-4"></i>
+            <span>MODELS & CHARACTERS</span>
+          </button>
+        </div>
+
+        <!-- Selected Model Header Summary Card -->
+        <div class="active-model-card" id="active-model-summary">
+          <div class="model-card-top">
+            <div class="model-avatar-circle">
+              <img id="active-model-avatar" src={formattedGalleryData[0]?.avatar} alt="Model Avatar">
+            </div>
+            <div class="model-text-meta">
+              <h3 class="model-card-name" id="active-model-name" set:html={formatTitleHtml(formattedGalleryData[0]?.name)}></h3>
+            </div>
+            <div class="model-works-count-pill" id="active-model-works-count">0 Works</div>
+          </div>
+          <div class="model-bio-section" id="active-model-bio-section">
+            <div class="model-card-bio" id="active-model-bio" set:html={formattedGalleryData[0]?.bio || ''}></div>
+          </div>
+        </div>
+
+        <!-- Works / Albums List -->
+        <div class="section-sub-heading">
+          <span>WORKS & ALBUMS</span>
+          <span class="sub-hint">作品を選択</span>
+        </div>
+        <div class="works-albums-list" id="works-albums-list">
+          <!-- Injected dynamically by JS -->
+        </div>
+
+      </div>
+
+      <!-- TIER 3: PHOTOS THUMBNAIL GRID (Inside Selected Work) -->
+      <div class="panel-view-section" id="view-photos">
+        
+        <!-- Back Navigation to Works List -->
+        <div class="panel-nav-bar">
+          <button class="panel-back-btn" id="btn-back-to-works" aria-label="作品一覧に戻る">
+            <i data-lucide="arrow-left" class="w-4 h-4"></i>
+            <span id="btn-back-works-label">WORKS LIST</span>
+          </button>
+        </div>
+
+        <!-- Active Work Header Card with Like & Comment Buttons -->
+        <div class="active-work-summary-card">
+          <div class="work-summary-top">
+            <h3 class="work-summary-title" id="active-work-title">Work Title</h3>
+            <div class="work-action-group">
+              <!-- Like Button -->
+              <button id="work-like-btn" class="action-pill-btn" aria-label="いいね">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"></path>
+                </svg>
+                <span id="work-like-count">0</span>
+              </button>
+
+              <!-- Comment Button -->
+              <button id="work-comment-btn" class="action-pill-btn" aria-label="コメントを見る">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                </svg>
+                <span id="work-comment-count">0</span>
+              </button>
+
+              <div class="work-photos-count-badge" id="active-work-photos-count">0 Photos</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Thumbnails Grid inside the Work -->
+        <div class="section-sub-heading">
+          <span>PHOTOS IN WORK</span>
+          <span class="sub-hint">タップで大画面切替</span>
+        </div>
+        <div class="photos-thumbnails-grid" id="photos-thumbnails-grid">
+          <!-- Injected dynamically by JS -->
+        </div>
+
+        <!-- Patreon Banner in Detail View -->
+        <a href="https://www.patreon.com/cw/u73055670?utm_medium=unknown&utm_source=join_link&utm_campaign=creatorshare_creator&utm_content=copyLink" target="_blank" rel="noopener noreferrer" class="patreon-detail-banner" aria-label="Patreonで限定作品を見る">
+          <div class="flex items-center gap-2.5">
+            <svg class="w-5 h-5 text-[#ff424d] fill-current shrink-0" viewBox="0 0 1080 1080">
+              <path d="M1033.05,324.45c-0.19-137.9-107.59-250.92-233.6-291.7c-156.48-50.64-362.86-43.3-512.28,27.2 C106.07,145.41,49.18,332.61,47.06,519.31c-1.74,153.5,13.58,557.79,241.62,560.67c169.44,2.15,194.67-216.18,273.07-321.33 c55.78-74.81,127.6-95.94,216.01-117.82C929.71,603.22,1033.27,483.3,1033.05,324.45z"></path>
+            </svg>
+            <div>
+              <div class="text-white text-xs font-medium">Patreon Exclusive Collection</div>
+              <div class="text-gray-400 text-[10px]">高解像度・未公開カットをPatreonで公開中</div>
+            </div>
+          </div>
+          <span class="text-[#ff424d] text-xs font-semibold shrink-0">JOIN →</span>
+        </a>
+
+      </div>
+
+    </aside>
+
+  </main>
+
+  <!-- ============================================================
+       EXPLORE VIEWPORT: INFINITE CINEMATIC GALLERY
+       Full immersion infinite photo stream with gesture navigation
+       ============================================================ -->
+  <section id="explore-viewport" class="explore-viewport" aria-label="EXPLORE 無限ギャラリー" style="display: none;">
+    <!-- Dynamic Ambient Blur Background Layer -->
+    <div class="explore-blur-backdrop" id="explore-blur-backdrop">
+      <img id="explore-blur-img" src="" alt="" aria-hidden="true" />
+    </div>
+
+    <!-- Main Visual Stage (Pan, Pinch, Swipe Container) -->
+    <div class="explore-stage-area" id="explore-stage-area">
+      <div class="explore-image-wrapper" id="explore-image-wrapper">
+        <img id="explore-current-img" class="explore-current-img" src="" alt="Explore Photography" draggable="false" />
+      </div>
+
+      <!-- PC Navigation Chevrons -->
+      <button class="explore-nav-btn prev" id="explore-prev-btn" aria-label="前の写真 (←)">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"></polyline></svg>
+        <span>PREV</span>
+      </button>
+      <button class="explore-nav-btn next" id="explore-next-btn" aria-label="次の写真 (→)">
+        <span>NEXT</span>
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+      </button>
+    </div>
+
+    <!-- Overlay UI Controls (Auto fade-out after inactivity) -->
+    <div class="explore-ui-overlay" id="explore-ui-overlay">
+      <!-- Top Utility Header -->
+      <header class="explore-header">
+        <div class="explore-model-meta" id="explore-model-meta">
+          <span class="explore-model-chip" id="explore-model-chip"></span>
+          <span class="explore-model-name" id="explore-model-name">美羽 / Miu</span>
+        </div>
+
+        <div class="explore-actions">
+          <!-- Like Button -->
+          <button id="explore-like-btn" class="explore-btn-pill" aria-label="作品をお気に入り / Like">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"></path>
+            </svg>
+            <span id="explore-like-count">0</span>
+          </button>
+
+          <!-- AI Tags Button -->
+          <button id="explore-tags-btn" class="explore-btn-pill" aria-label="AIタグ・作品詳細 (T)">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"></path>
+              <line x1="7" y1="7" x2="7.01" y2="7"></line>
+            </svg>
+            <span>タグ</span>
+          </button>
+
+          <!-- Back to GALLERY Mode -->
+          <button id="explore-close-btn" class="explore-btn-pill explore-close" aria-label="ギャラリーモードに戻る (Esc)">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+            <span>ギャラリー</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Bottom Information Footer -->
+      <footer class="explore-footer">
+        <div class="explore-work-info">
+          <h2 class="explore-work-title" id="explore-work-title">Work Title</h2>
+          <div class="explore-index-pill" id="explore-index-pill">01 / 12</div>
+        </div>
+        <div class="explore-model-nav-hint">
+          <span>↕ モデル切替</span>
+        </div>
+      </footer>
+    </div>
+
+    <!-- AI Tags & Summary Bottom Sheet -->
+    <div class="explore-tags-sheet" id="explore-tags-sheet" aria-hidden="true">
+      <div class="explore-sheet-backdrop" id="explore-sheet-backdrop"></div>
+      <div class="explore-sheet-panel" id="explore-sheet-panel">
+        <div class="explore-sheet-drag-handle"></div>
+        <div class="explore-sheet-header">
+          <div>
+            <div class="explore-sheet-model" id="sheet-model-name">美羽 / Miu</div>
+            <h3 class="explore-sheet-work" id="sheet-work-title">Work Title</h3>
+          </div>
+          <button class="explore-sheet-close" id="sheet-close-btn" aria-label="閉じる">✕</button>
+        </div>
+
+        <div class="explore-sheet-content">
+          <div class="explore-sheet-section">
+            <h4>AI TAGS</h4>
+            <div class="explore-sheet-tags" id="sheet-tags-list">
+              <!-- Dynamically rendered -->
+            </div>
+          </div>
+
+          <div class="explore-sheet-section">
+            <h4>AI SUMMARY</h4>
+            <p class="explore-sheet-summary" id="sheet-summary-text">タグ情報はありません</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- First-Time Exploration Gesture Hint -->
+    <div class="explore-hint-overlay" id="explore-hint-overlay" style="display: none;">
+      <div class="explore-hint-box">
+        <div class="explore-hint-topbar">
+          <h3 class="explore-hint-title">無限モードの操作ガイド</h3>
+          <button class="explore-hint-close-top" id="explore-hint-close-top" aria-label="閉じる">✕</button>
+        </div>
+        <!-- Smartphone Instructions -->
+        <div class="explore-hint-grid sp-hint">
+          <div class="hint-item"><span class="hint-icon">← →</span><span>写真をめくる（無限ループ）</span></div>
+          <div class="hint-item"><span class="hint-icon">↑ ↓</span><span>モデル切替（縦スワイプ）</span></div>
+          <div class="hint-item"><span class="hint-icon">♡♡</span><span>ダブルタップでいいね</span></div>
+          <div class="hint-item"><span class="hint-icon">👆長押し</span><span>AIタグ・作品詳細</span></div>
+          <div class="hint-item"><span class="hint-icon">1タップ</span><span>UI表示 / 非表示</span></div>
+        </div>
+        <!-- PC Instructions -->
+        <div class="explore-hint-grid pc-hint">
+          <div class="hint-item"><kbd>←</kbd> <kbd>→</kbd> / ホイール<span>写真をめくる</span></div>
+          <div class="hint-item"><kbd>↑</kbd> <kbd>↓</kbd><span>モデル切替</span></div>
+          <div class="hint-item"><kbd>F</kbd> / ダブルクリック<span>いいね</span></div>
+          <div class="hint-item"><kbd>T</kbd><span>AIタグ・作品詳細</span></div>
+          <div class="hint-item"><kbd>Esc</kbd><span>ギャラリーに戻る</span></div>
+        </div>
+        <button class="explore-hint-ok" id="explore-hint-ok-btn">はじめる</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- FLOATING CHARACTER SWITCHER DOCK (Tier 2 & Tier 3) -->
+  <nav id="character-floating-dock" class="character-floating-dock" aria-label="クイック・キャラクター切り替え">
+    <div class="dock-inner" id="dock-inner">
+      <!-- Injected dynamically by JS -->
+    </div>
+  </nav>
+
+  <!-- CINEMATIC FULLSCREEN LIGHTBOX MODAL -->
+  <dialog id="cinematic-modal" class="cinematic-lightbox" aria-modal="true" aria-label="高精細写真全画面ビュー">
+    <div class="modal-backdrop-blur" id="modal-backdrop-blur"></div>
+    <div class="modal-content-shell">
+      
+      <!-- Top Utility Bar -->
+      <div class="modal-top-bar">
+        <div class="modal-photo-meta">
+          <span class="modal-cat-badge" id="modal-cat-badge">PERSONA</span>
+          <h2 class="modal-photo-title" id="modal-photo-title">Title</h2>
+          <span class="modal-photo-model" id="modal-photo-model">Model</span>
+        </div>
+
+        <div class="modal-actions">
+          <!-- Modal Like Button -->
+          <button id="modal-like-btn" class="modal-btn" aria-label="いいね">
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"></path>
+            </svg>
+          </button>
+          <!-- Modal Comment Button -->
+          <button id="modal-comment-btn" class="modal-btn" aria-label="コメント">
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+            </svg>
+          </button>
+          <button id="modal-prev-btn" class="modal-btn" aria-label="前の写真 (←)">
+            <i data-lucide="chevron-left" class="w-5 h-5"></i>
+          </button>
+          <button id="modal-next-btn" class="modal-btn" aria-label="次の写真 (→)">
+            <i data-lucide="chevron-right" class="w-5 h-5"></i>
+          </button>
+          <button id="modal-close-btn" class="modal-btn close-btn" aria-label="閉じる (Esc)">
+            <i data-lucide="x" class="w-5 h-5"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Main Photo Display Area -->
+      <div class="modal-main-stage" id="modal-main-stage">
+        <div class="modal-image-holder" id="modal-image-holder">
+          <img id="modal-img" src="" alt="Expanded Photography" class="modal-highres-img">
+        </div>
+
+        <!-- First-Time Swipe Hint Overlay -->
+        <div id="modal-swipe-hint" class="modal-swipe-hint" style="display: none;">
+          <div class="swipe-hint-pill">
+            <span class="swipe-arrow swipe-arrow-left">‹</span>
+            <span class="swipe-hand-icon">👆</span>
+            <span class="swipe-arrow swipe-arrow-right">›</span>
+            <span class="swipe-hint-text">スワイプで写真送り</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </dialog>
+
+  <!-- COMMENTS MODAL / DRAWER -->
+  <dialog id="comment-modal" aria-labelledby="comment-modal-title" class="bg-transparent m-auto p-0 w-full h-full max-w-md backdrop:bg-black/80 overflow-hidden outline-none z-[300] overscroll-contain">
+    <div class="bg-[#121218] rounded-3xl border border-white/10 shadow-2xl flex flex-col h-[82vh] max-h-[720px] w-[92%] max-w-sm mx-auto mt-[9vh] overflow-hidden transform scale-95 opacity-0 transition-all duration-300" id="comment-modal-content">
+      <div class="p-4 px-6 border-b border-white/5 flex justify-between items-center bg-[#09090d] shrink-0">
+        <h3 id="comment-modal-title" class="text-white font-medium text-sm tracking-wide">Comments <span class="text-gray-500 text-xs ml-2" id="modal-comment-count">0</span></h3>
+        <button id="btn-close-comment-modal" class="text-gray-400 hover:text-white outline-none transition-colors p-1" aria-label="閉じる">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+      </div>
+      
+      <div class="flex-1 overflow-y-auto p-5 space-y-4 scroll-smooth overscroll-contain" id="comment-list" aria-live="polite">
+        <p class="text-gray-500 font-light text-center py-10">まだコメントはありません。<br/>最初のコメントを投稿しよう！</p>
+      </div>
+
+      <div class="p-4 border-t border-white/5 bg-[#09090d] shrink-0 relative pb-[calc(1rem+env(safe-area-inset-bottom))]">
+        <div id="reply-indicator" class="hidden absolute top-0 left-4 -translate-y-[calc(100%-1px)] bg-[#121218] border border-white/10 border-b-0 rounded-t-xl px-4 py-1.5 items-center gap-4 z-0 text-xs shadow-lg">
+          <span class="text-gray-400 font-light"><span id="reply-indicator-name" class="text-white font-medium"></span> さんに返信中...</span>
+          <button id="btn-cancel-reply" class="text-gray-500 hover:text-rose-400 outline-none p-1" aria-label="返信をキャンセル">✕</button>
+        </div>
+
+        <div id="comment-form-wrapper" class="relative z-10 bg-[#09090d]">
+          <input type="text" id="comment-author" placeholder="名前 (任意)" aria-label="名前" class="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-xs mb-2 outline-none focus:border-rose-500 transition-colors font-light" />
+          <div class="flex gap-2">
+            <input type="text" id="comment-content" placeholder="コメントを入力..." aria-label="コメント" class="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-white text-xs outline-none focus:border-rose-500 transition-colors font-light" />
+            <button type="button" id="comment-submit-btn" class="bg-rose-500/80 hover:bg-rose-500 text-white px-4 py-2 rounded-lg text-xs font-medium transition-colors outline-none shrink-0">送信</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- ABOUT / INFO MODAL -->
+  <dialog id="info-modal" class="info-drawer-modal" aria-modal="true" aria-label="Miu's Gallery について">
+    <div class="info-drawer-inner">
+      <div class="drawer-header">
+        <h2 class="drawer-title">ABOUT MIU'S GALLERY</h2>
+        <button id="info-close-btn" class="modal-btn" aria-label="閉じる">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+      <div class="drawer-body">
+        <p class="lead-statement">
+          「各キャラクターの作品世界」と「写真集をめくるようなシームレスな探索」。
+        </p>
+        <p>
+          Miu's Gallery は、各モデルが紡ぎ出す複数の作品（Works）と、それぞれの作品に収められた複数枚の高精細写真（Photos）を、1画面内でスムーズに鑑賞できるフォトアーカイブです。
+        </p>
+        <h3 style="margin-top: 1.25rem; font-size: 0.95rem; font-weight: 700; color: #fff;">HOW TO EXPLORE</h3>
+        <ul class="guide-list">
+          <li><strong>モデル選択:</strong> モデル一覧から気になるモデルをタップすると、そのモデルの作品集（Works）が展開。</li>
+          <li><strong>作品選択:</strong> 作品を選ぶと、収録写真のサムネイル一覧が表示され、大画面で鑑賞できます。</li>
+          <li><strong>写真送り:</strong> 左右矢印ボタンや、スマホの画面スワイプで同じ作品内の写真を連続してめくれます。</li>
+          <li><strong>全画面拡大:</strong> メイン写真をタップすると、高精細ズームモーダルが起動。</li>
+          <li><strong>キーボード操作:</strong> <kbd>Esc</kbd> で1階層戻る / モーダルを閉じる、<kbd>←</kbd> <kbd>→</kbd> で写真送り。</li>
+        </ul>
+
+        <!-- Official Social Links -->
+        <div class="mt-6 pt-5 border-t border-white/10">
+          <h4 style="font-size: 0.75rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em; margin-bottom: 0.75rem; text-transform: uppercase;">Official Links</h4>
+          <div class="grid grid-cols-3 gap-2">
+            <!-- X (Twitter) -->
+            <a href="https://x.com/xx_ai_girls_miu" target="_blank" rel="noopener noreferrer" class="flex flex-col items-center justify-center p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition group text-center">
+              <svg class="w-4 h-4 text-white mb-1 group-hover:scale-110 transition-transform" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+              </svg>
+              <span class="text-[10px] text-gray-300 font-medium">X</span>
+            </a>
+            <!-- Instagram -->
+            <a href="https://www.instagram.com/xx.ai.girls.miu0402/" target="_blank" rel="noopener noreferrer" class="flex flex-col items-center justify-center p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition group text-center">
+              <svg class="w-4 h-4 text-pink-400 mb-1 group-hover:scale-110 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect>
+                <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path>
+                <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line>
+              </svg>
+              <span class="text-[10px] text-gray-300 font-medium">Instagram</span>
+            </a>
+            <!-- Patreon -->
+            <a href="https://www.patreon.com/cw/u73055670?utm_medium=unknown&utm_source=join_link&utm_campaign=creatorshare_creator&utm_content=copyLink" target="_blank" rel="noopener noreferrer" class="flex flex-col items-center justify-center p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition group text-center">
+              <svg class="w-4 h-4 text-rose-400 mb-1 group-hover:scale-110 transition-transform" viewBox="0 0 1080 1080" fill="currentColor">
+                <path d="M1033.05,324.45c-0.19-137.9-107.59-250.92-233.6-291.7c-156.48-50.64-362.86-43.3-512.28,27.2 C106.07,145.41,49.18,332.61,47.06,519.31c-1.74,153.5,13.58,557.79,241.62,560.67c169.44,2.15,194.67-216.18,273.07-321.33 c55.78-74.81,127.6-95.94,216.01-117.82C929.71,603.22,1033.27,483.3,1033.05,324.45z"></path>
+              </svg>
+              <span class="text-[10px] text-gray-300 font-medium">Patreon</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- PWA Manual Trigger in About Modal -->
+        <div class="mt-4 pt-4 border-t border-white/10 flex flex-col gap-2">
+          <button id="about-pwa-btn" type="button" class="w-full flex items-center justify-center gap-2.5 py-3 px-4 rounded-xl bg-gradient-to-r from-rose-500/20 to-pink-500/20 hover:from-rose-500/30 hover:to-pink-500/30 border border-rose-500/30 text-rose-300 hover:text-white font-medium text-xs transition-all">
+            <svg class="w-4 h-4 text-rose-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
+              <line x1="12" y1="18" x2="12.01" y2="18"></line>
+              <polyline points="9 9 12 12 15 9"></polyline>
+              <line x1="12" y1="6" x2="12" y2="12"></line>
+            </svg>
+            <span>ホーム画面にアプリを追加する</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- PWA INSTALL PROMPT (Mobile & iOS & Desktop) -->
+  <div id="pwa-install-prompt" role="alert" aria-live="polite">
+    <div class="flex items-start justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl overflow-hidden shrink-0 border border-[#F43F5E]/50 bg-black shadow-md">
+          <img src="/pwa-192x192.png" alt="App Icon" class="w-full h-full object-cover" />
+        </div>
+        <div>
+          <h3 class="text-white text-sm font-semibold tracking-wide">アプリとして追加</h3>
+          <p class="text-gray-300 text-xs mt-0.5 leading-snug">ホーム画面に追加してフルスクリーンでお楽しみください</p>
+        </div>
+      </div>
+      <button id="pwa-close-btn" class="text-gray-400 hover:text-white transition-colors p-1.5 shrink-0 -mt-1 -mr-1 rounded-lg hover:bg-white/10" aria-label="閉じる">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+      </button>
+    </div>
+
+    <!-- iOS手順案内 -->
+    <div id="pwa-ios-instructions" class="hidden text-xs text-gray-200 bg-white/10 rounded-xl p-3 border border-white/10 shadow-inner">
+      <ol class="list-decimal list-inside space-y-1.5 ml-1">
+        <li>Safari下部の <svg class="w-4 h-4 inline-block align-text-bottom mx-0.5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg> 共有ボタンをタップ</li>
+        <li>メニュー内の「<span class="font-bold text-white underline decoration-rose-400 underline-offset-2">ホーム画面に追加</span>」をタップ</li>
+      </ol>
+    </div>
+
+    <!-- Android / ブラウザ手動追加案内（beforeinstallprompt非対応時） -->
+    <div id="pwa-manual-instructions" class="hidden text-xs text-gray-200 bg-white/10 rounded-xl p-3 border border-white/10 shadow-inner">
+      <p class="leading-relaxed">ブラウザ右上のメニュー「<strong class="text-white">︙</strong>」から「<strong class="text-white underline decoration-rose-400 underline-offset-2">アプリをインストール</strong>」または「<strong class="text-white underline decoration-rose-400 underline-offset-2">ホーム画面に追加</strong>」を選択してください。</p>
+    </div>
+
+    <!-- ワンタップインストールボタン（beforeinstallprompt検知時） -->
+    <button id="pwa-install-btn" class="hidden w-full bg-[#F43F5E] hover:bg-[#E11D48] active:scale-[0.98] text-white text-sm font-semibold py-2.5 rounded-xl transition-all shadow-[0_4px_16px_rgba(244,63,94,0.4)]">
+      インストールする
+    </button>
+  </div>
+
+  <!-- クライアント用データペイロード (JSON) -->
+  <script id="app-gallery-data" type="application/json" set:html={JSON.stringify({
+    galleryData: formattedGalleryData,
+    heroSliderList: heroSliderList,
+    allPhotosFlat: allPhotosFlat,
+    debugLog: debugLog
+  })} />
+
+  <!-- APP CLIENT-SIDE INTERACTION SCRIPT -->
+  <script is:inline>
+    (function() {
+      // データの取得
+      const dataScript = document.getElementById('app-gallery-data');
+      if (!dataScript) return;
+      const { galleryData, heroSliderList, allPhotosFlat } = JSON.parse(dataScript.textContent);
+
+      // アプリケーション状態
+      let currentModelId = galleryData[0]?.id || '';
+      let currentWorkId = galleryData[0]?.works?.[0]?.id || '';
+      let currentWork = galleryData[0]?.works?.[0] || null;
+      let currentPhotosInWork = [];
+      let currentPhotoIndex = 0;
+
+      let isHeroSliderActive = false;
+      let heroSliderIndex = 0;
+      let heroSliderTimer = null;
+
+      // モーダル・ズーム・ジェスチャー状態
+      let modalPhotoIndex = 0;
+      let modalFilteredList = [...allPhotosFlat];
+      let currentScale = 1;
+      let currentPanX = 0;
+      let currentPanY = 0;
+      let startPinchDist = 0;
+      let startScale = 1;
+      let touchStartX = 0;
+      let touchStartY = 0;
+      let startPanX = 0;
+      let startPanY = 0;
+      let isPinching = false;
+      let isPanning = false;
+      let lastTapTime = 0;
+      let swipeHintTimeout = null;
+
+      // コメント関連状態
+      let activeReplyId = 0;
+      const commentModal = document.getElementById('comment-modal');
+      const commentModalContent = document.getElementById('comment-modal-content');
+      const commentList = document.getElementById('comment-list');
+      const commentAuthorInput = document.getElementById('comment-author');
+      const commentContentInput = document.getElementById('comment-content');
+      const commentSubmitBtn = document.getElementById('comment-submit-btn');
+
+      // DOM 要素
+      const modal = document.getElementById('cinematic-modal');
+      const modalImg = document.getElementById('modal-img');
+      const modalTitle = document.getElementById('modal-photo-title');
+      const modalModel = document.getElementById('modal-photo-model');
+      const modalBadge = document.getElementById('modal-cat-badge');
+      const modalCloseBtn = document.getElementById('modal-close-btn');
+      const modalNextBtn = document.getElementById('modal-next-btn');
+      const modalPrevBtn = document.getElementById('modal-prev-btn');
+      const modalBackdrop = document.getElementById('modal-backdrop-blur');
+      const swipeHintEl = document.getElementById('modal-swipe-hint');
+      const imageHolder = document.getElementById('modal-image-holder');
+
+      function formatTitleHtml(displayName) {
+        if (!displayName) return '';
+        if (displayName.includes(' / ')) {
+          const parts = displayName.split(' / ');
+          return `<span class="char-kanji">${parts[0]}</span><span class="char-divider">/</span><span class="char-romaji">${parts[1]}</span>`;
+        }
+        return `<span class="char-kanji">${displayName}</span>`;
+      }
+
+      const clientCharNameMap = {
+        "美羽": "Miu",
+        "美夜": "Miya",
+        "美姫": "Miki",
+        "美桜": "Mio",
+        "美空": "Miku",
+        "美玖": "Miku",
+        "美英": "Miei",
+        "美詠": "Miei",
+        "美香": "Mika",
+        "美華": "Mika",
+        "美緑": "Midori",
+        "美鳥": "Midori",
+        "未来": "Mirai",
+        "美莱": "Mirai",
+        "美柚": "Miyuzu",
+        "美ゆず": "Miyuzu",
+        "美登": "Mito",
+        "美豊": "Mito",
+        "雪": "Yuki",
+        "ユキ": "Yuki"
+      };
+
+      const clientSlugNameMap = {
+        "miu": "Miu",
+        "miya": "Miya",
+        "miki": "Miki",
+        "mio": "Mio",
+        "miku": "Miku",
+        "miei": "Miei",
+        "mika": "Mika",
+        "midori": "Midori",
+        "mirai": "Mirai",
+        "miyuzu": "Miyuzu",
+        "mito": "Mito",
+        "yuki": "Yuki"
+      };
+
+      function getRomajiName(displayName, slug) {
+        if (!displayName) return 'Miu';
+        if (displayName.includes(' / ')) {
+          return displayName.split(' / ')[1].trim();
+        }
+        const clean = displayName.trim();
+        if (clientCharNameMap[clean]) {
+          return clientCharNameMap[clean];
+        }
+        const lower = clean.toLowerCase();
+        if (clientSlugNameMap[lower]) {
+          return clientSlugNameMap[lower];
+        }
+        if (slug && clientSlugNameMap[slug.toLowerCase()]) {
+          return clientSlugNameMap[slug.toLowerCase()];
+        }
+        if (slug && slug !== 'featured') {
+          return slug.charAt(0).toUpperCase() + slug.slice(1).toLowerCase();
+        }
+        return clean.charAt(0).toUpperCase() + clean.slice(1);
+      }
+
+      // ============================================================
+      // PWA INSTALL PROMPT (Mobile & iOS & Desktop)
+      // ============================================================
+      function initPwaPrompt() {
+        const promptEl = document.getElementById('pwa-install-prompt');
+        if (!promptEl) return;
+
+        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (window.navigator && window.navigator.standalone);
+        const urlParams = new URLSearchParams(window.location.search);
+        const forcePwa = urlParams.has('pwa');
+
+        const headerBtn = document.getElementById('header-pwa-btn');
+        const aboutInstallBtn = document.getElementById('about-pwa-btn');
+
+        // すでにネイティブアプリとしてインストール・起動中の場合はボタン類を非表示
+        if (isStandalone) {
+          if (headerBtn) headerBtn.style.display = 'none';
+          if (aboutInstallBtn) aboutInstallBtn.style.display = 'none';
+          return;
+        }
+
+        const DISMISS_KEY = 'miu_pwa_dismiss_until';
+        // 過去の永久非表示キーを削除してリセット
+        localStorage.removeItem('miu_pwa_prompt_closed');
+
+        const dismissUntil = parseInt(localStorage.getItem(DISMISS_KEY) || '0', 10);
+        const isDismissed = !forcePwa && (Date.now() < dismissUntil);
+
+        const iosInstructions = document.getElementById('pwa-ios-instructions');
+        const manualInstructions = document.getElementById('pwa-manual-instructions');
+        const installBtn = document.getElementById('pwa-install-btn');
+        const closeBtn = document.getElementById('pwa-close-btn');
+
+        const userAgent = window.navigator.userAgent.toLowerCase();
+        const isIOS = /iphone|ipad|ipod/.test(userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+        const showPrompt = (isManual = false) => {
+          if (!isManual && isDismissed) {
+            return;
+          }
+
+          const prompt = window.__deferredPwaPrompt;
+          if (prompt) {
+            // Android Chrome等でbeforeinstallpromptが取れた場合（ワンタップボタン）
+            if (installBtn) installBtn.classList.remove('hidden');
+            if (manualInstructions) manualInstructions.classList.add('hidden');
+            if (iosInstructions) iosInstructions.classList.add('hidden');
+          } else if (isIOS) {
+            // iPhone / iPad（Safari共有ボタン案内）
+            if (iosInstructions) iosInstructions.classList.remove('hidden');
+            if (manualInstructions) manualInstructions.classList.add('hidden');
+            if (installBtn) installBtn.classList.add('hidden');
+          } else {
+            // その他（手動メニュー追加案内）
+            if (manualInstructions) manualInstructions.classList.remove('hidden');
+            if (iosInstructions) iosInstructions.classList.add('hidden');
+            if (installBtn) installBtn.classList.add('hidden');
+          }
+
+          promptEl.classList.add('is-visible');
+        };
+
+        const hidePrompt = (persistDismiss = true) => {
+          promptEl.classList.remove('is-visible');
+          if (persistDismiss) {
+            // 閉じた場合は12時間自動ポップアップを抑制
+            localStorage.setItem(DISMISS_KEY, (Date.now() + 12 * 60 * 60 * 1000).toString());
+          }
+        };
+
+        window.__triggerPwaPrompt = (manual = false) => showPrompt(manual);
+
+        // ヘッダーボタン・Aboutモーダル内のボタンから手動表示
+        headerBtn?.addEventListener('click', (e) => {
+          e.preventDefault();
+          showPrompt(true);
+        });
+
+        aboutInstallBtn?.addEventListener('click', (e) => {
+          e.preventDefault();
+          const infoModal = document.getElementById('info-modal');
+          if (infoModal && typeof infoModal.close === 'function') {
+            infoModal.close();
+          }
+          showPrompt(true);
+        });
+
+        // 自動表示（未閉鎖時または?pwa指定時）
+        if (!isDismissed || forcePwa) {
+          if (window.__deferredPwaPrompt) {
+            setTimeout(() => showPrompt(false), 1200);
+          } else {
+            setTimeout(() => showPrompt(false), 1800);
+          }
+        }
+
+        closeBtn?.addEventListener('click', (e) => {
+          e.stopPropagation();
+          hidePrompt(true);
+        });
+
+        installBtn?.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const prompt = window.__deferredPwaPrompt;
+          if (prompt) {
+            prompt.prompt();
+            const { outcome } = await prompt.userChoice;
+            if (outcome === 'accepted') {
+              hidePrompt(true);
+            }
+            window.__deferredPwaPrompt = null;
+          }
+        });
+      }
+
+      // ============================================================
+      // SCROLL-TRIGGERED FLOATING HEADER
+      // ============================================================
+      function checkTopBarVisibility() {
+        const topBar = document.getElementById('floating-top-bar');
+        if (!topBar) return;
+
+        const isSubpage = document.body.classList.contains('is-subpage');
+        const scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
+        const panelScrollY = document.getElementById('side-content-panel')?.scrollTop || 0;
+
+        // サブページ表示中、または30px以上スクロールした時に表示
+        if (scrollY > 30 || panelScrollY > 30 || isSubpage) {
+          topBar.classList.add('is-visible');
+        } else {
+          topBar.classList.remove('is-visible');
+        }
+      }
+
+      function initScrollHeader() {
+        window.addEventListener('scroll', checkTopBarVisibility, { passive: true });
+        document.getElementById('side-content-panel')?.addEventListener('scroll', checkTopBarVisibility, { passive: true });
+        checkTopBarVisibility();
+      }
+
+      function initApp() {
+        bindCharactersViewEvents();
+        initFloatingDock();
+        initStageControls();
+        initModal();
+        initCustomCursor();
+        init3DTilt();
+        initKeyboardShortcuts();
+        initAboutModal();
+        initLikesAndComments();
+        initPwaPrompt();
+        initExploreMode();
+        initScrollHeader();
+
+        // 初期表示: ホーム画面（Hero Slider開始）
+        showCharactersView();
+
+        // PC: メインビジュアル上でホイールした際にサイドパネルをスクロール
+        const stage = document.getElementById('main-visual-stage');
+        stage?.addEventListener('wheel', (e) => {
+          if (window.innerWidth > 960) {
+            const activePanel = document.querySelector('.panel-view-section.active');
+            if (activePanel) {
+              activePanel.scrollTop += e.deltaY;
+            }
+          }
+        }, { passive: true });
+
+        // ブランドロゴクリックでトップ（モデル一覧）へ戻る
+        document.getElementById('brand-home-link')?.addEventListener('click', (e) => {
+          e.preventDefault();
+          showCharactersView();
+        });
+
+        // 戻るボタン
+        document.getElementById('btn-back-to-characters')?.addEventListener('click', () => {
+          showCharactersView();
+        });
+
+        document.getElementById('btn-back-to-works')?.addEventListener('click', () => {
+          showWorksView(currentModelId);
+        });
+
+        // メインビジュアルクリック処理
+        document.getElementById('stage-photo-wrapper')?.addEventListener('click', () => {
+          if (isHeroSliderActive || !document.body.classList.contains('is-subpage')) {
+            // トップページでスライダー動作中の場合
+            const currentSlide = heroSliderList[heroSliderIndex];
+            if (currentSlide?.isLatestPost && currentSlide?.workId && currentSlide?.characterId) {
+              // 最新作スライドの場合：モデル作品一覧を開いた上で、その作品アルバムを直接展開！
+              showWorksView(currentSlide.characterId);
+              showPhotosView(currentSlide.workId);
+            } else if (currentSlide?.characterId && currentSlide.characterId !== 'featured') {
+              showWorksView(currentSlide.characterId);
+            } else if (galleryData[0]?.id) {
+              showWorksView(galleryData[0].id);
+            }
+            return;
+          }
+          // 作品詳細時：高精細モーダルを展開
+          const activePhoto = currentPhotosInWork[currentPhotoIndex];
+          if (activePhoto) openModal(activePhoto.id);
+        });
+
+        // Lucide Icons 再生成
+        if (window.lucide) {
+          window.lucide.createIcons();
+        }
+      }
+
+      // ============================================================
+      // TIER 1: CHARACTERS VIEW
+      // ============================================================
+      function bindCharactersViewEvents() {
+        const container = document.getElementById('characters-grid-list');
+        if (!container) return;
+
+        container.querySelectorAll('.char-select-card').forEach(card => {
+          card.addEventListener('click', () => {
+            const cid = card.getAttribute('data-char-id');
+            if (cid) showWorksView(cid);
+          });
+        });
+      }
+
+      function showCharactersView() {
+        switchPanelView('view-characters');
+        startHeroSlider();
+      }
+
+      // ============================================================
+      // TIER 2: WORKS / ALBUMS LIST VIEW
+      // ============================================================
+      function showWorksView(modelId) {
+        stopHeroSlider();
+        currentModelId = modelId;
+        const model = galleryData.find(c => c.id === modelId) || galleryData[0];
+        if (!model) return;
+
+        morphCharacterColor(model.color, model.rgb);
+        switchPanelView('view-works');
+        updateFloatingDockActive(modelId);
+
+        // メインステージのバッジ反映
+        const stageColorChip = document.getElementById('stage-color-chip');
+        if (stageColorChip) stageColorChip.style.backgroundColor = model.color;
+        const stageBadgeName = document.getElementById('stage-badge-name');
+        if (stageBadgeName) stageBadgeName.textContent = getRomajiName(model.name, model.id);
+
+        // モデル概要カード更新
+        const modelNameEl = document.getElementById('active-model-name');
+        if (modelNameEl) modelNameEl.innerHTML = formatTitleHtml(model.name);
+        const worksCountEl = document.getElementById('active-model-works-count');
+        if (worksCountEl) worksCountEl.textContent = `${model.works.length} Works`;
+        const avatarEl = document.getElementById('active-model-avatar');
+        if (avatarEl) avatarEl.src = model.avatar;
+        const bioSectionEl = document.getElementById('active-model-bio-section');
+        const bioEl = document.getElementById('active-model-bio');
+        if (bioEl) {
+          if (model.bio && model.bio.trim() !== '') {
+            bioEl.innerHTML = model.bio;
+            if (bioSectionEl) bioSectionEl.style.display = 'block';
+          } else {
+            bioEl.innerHTML = '';
+            if (bioSectionEl) bioSectionEl.style.display = 'none';
+          }
+        }
+
+        // 作品アルバム一覧をレンダリング
+        const worksContainer = document.getElementById('works-albums-list');
+        if (worksContainer) {
+          worksContainer.innerHTML = model.works.map(w => {
+            const displayTags = Array.isArray(w.aiTags)
+              ? w.aiTags.slice(0, 4)
+              : [];
+
+            const tagsHtml = displayTags.length > 0
+              ? `
+                <div class="work-ai-tags">
+                  ${displayTags.map(tag => `
+                    <span class="work-ai-tag">${tag}</span>
+                  `).join('')}
+                </div>
+              `
+              : '';
+
+            return `
+              <button class="work-album-card" data-work-id="${w.id}" aria-label="${w.title} の写真を閲覧">
+                <div class="work-album-cover">
+                  <img src="${w.coverImage}" alt="${w.title}" loading="lazy" referrerpolicy="no-referrer">
+                </div>
+                <div class="work-album-info">
+                  <h4 class="work-album-title">${w.title}</h4>
+                  <div class="work-album-meta">
+                    <span class="work-photos-badge">${w.photos.length} Photos</span>
+                  </div>
+                  ${tagsHtml}
+                </div>
+              </button>
+            `;
+          }).join('');
+
+          worksContainer.querySelectorAll('.work-album-card').forEach(card => {
+            card.addEventListener('click', () => {
+              const wid = card.getAttribute('data-work-id');
+              if (wid) showPhotosView(wid);
+            });
+          });
+        }
+
+        // 最初の作品の最初の写真をメインステージに表示
+        if (model.works.length > 0) {
+          const firstWork = model.works[0];
+          currentWorkId = firstWork.id;
+          currentWork = firstWork;
+          currentPhotosInWork = firstWork.photos.map(p => ({
+            ...p,
+            characterId: model.id,
+            modelName: model.name,
+            workTitle: firstWork.title,
+            databaseId: firstWork.databaseId,
+          }));
+          currentPhotoIndex = 0;
+          updateModalFilteredList(currentPhotosInWork);
+          setMainStagePhoto(currentPhotosInWork[0], firstWork, model);
+        }
+
+        if (window.rebindCursorHovers) window.rebindCursorHovers();
+      }
+
+      // ============================================================
+      // TIER 3: PHOTOS THUMBNAILS GRID VIEW (INSIDE WORK)
+      // ============================================================
+      function showPhotosView(workId) {
+        currentWorkId = workId;
+        const model = galleryData.find(c => c.id === currentModelId) || galleryData[0];
+        if (!model) return;
+        const work = model.works.find(w => w.id === workId) || model.works[0];
+        if (!work) return;
+
+        currentWork = work;
+
+        switchPanelView('view-photos');
+        updateFloatingDockActive(currentModelId);
+
+        // 作品概要カード更新
+        const workTitleEl = document.getElementById('active-work-title');
+        if (workTitleEl) workTitleEl.textContent = work.title;
+        const photosCountEl = document.getElementById('active-work-photos-count');
+        if (photosCountEl) photosCountEl.textContent = `${work.photos.length} Photos`;
+        const backLabel = document.getElementById('btn-back-works-label');
+        if (backLabel) backLabel.textContent = `${model.name.split(' ')[0]}'S WORKS`;
+
+        // いいね・コメント状態の更新
+        updateWorkStatsUI();
+        if (work.databaseId) {
+          fetchLiveStats(work.databaseId);
+        }
+
+        currentPhotosInWork = work.photos.map(p => ({
+          ...p,
+          characterId: model.id,
+          modelName: model.name,
+          workTitle: work.title,
+          databaseId: work.databaseId,
+        }));
+
+        currentPhotoIndex = 0;
+        updateModalFilteredList(currentPhotosInWork);
+
+        // サムネイルグリッドの描画
+        const thumbsGrid = document.getElementById('photos-thumbnails-grid');
+        if (thumbsGrid) {
+          thumbsGrid.innerHTML = currentPhotosInWork.map((p, index) => `
+            <button class="photo-thumb-btn ${index === currentPhotoIndex ? 'active' : ''}" data-index="${index}" aria-label="${p.title}">
+              <img src="${p.image}" alt="${p.title}" loading="lazy" referrerpolicy="no-referrer">
+              <div class="photo-thumb-caption">${p.title}</div>
+            </button>
+          `).join('');
+
+          thumbsGrid.querySelectorAll('.photo-thumb-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+              const idx = parseInt(btn.getAttribute('data-index'), 10);
+              selectPhotoInWork(idx, work, model);
+            });
+          });
+        }
+
+        if (currentPhotosInWork.length > 0) {
+          setMainStagePhoto(currentPhotosInWork[0], work, model);
+        }
+
+        if (window.rebindCursorHovers) window.rebindCursorHovers();
+      }
+
+      function selectPhotoInWork(index, work, model) {
+        currentPhotoIndex = index;
+        document.querySelectorAll('.photo-thumb-btn').forEach((btn, i) => {
+          btn.classList.toggle('active', i === currentPhotoIndex);
+        });
+        setMainStagePhoto(currentPhotosInWork[index], work, model);
+      }
+
+      // パネルビュー切り替え
+      function switchPanelView(viewId) {
+        ['view-characters', 'view-works', 'view-photos'].forEach(id => {
+          document.getElementById(id)?.classList.toggle('active', id === viewId);
+        });
+
+        const isSubpage = (viewId === 'view-works' || viewId === 'view-photos');
+        const isPhotosView = (viewId === 'view-photos');
+
+        document.body.classList.toggle('is-subpage', isSubpage);
+        document.body.classList.toggle('is-photos-view', isPhotosView);
+
+        // スマホでは画面全体のスクロール位置を最上部（Y = 0）に確実にリセット
+        // これにより、どのキャラクターをスクロールしてタップしても画面が下へズレずに統一して表示される
+        if (window.innerWidth <= 960) {
+          window.scrollTo({ top: 0, behavior: 'instant' });
+        } else {
+          const sidePanel = document.getElementById('side-content-panel');
+          if (sidePanel) sidePanel.scrollTop = 0;
+        }
+
+        const targetView = document.getElementById(viewId);
+        if (targetView) targetView.scrollTop = 0;
+
+        document.getElementById('character-floating-dock')?.classList.toggle('visible', isSubpage);
+        document.getElementById('side-content-panel')?.classList.toggle('has-floating-dock', isSubpage);
+
+        // ヘッダーのスクロール可視状態を再判定
+        checkTopBarVisibility();
+      }
+
+      // ============================================================
+      // MAIN STAGE PHOTO CONTROLLER
+      // ============================================================
+      function updateExpandPromptLabel(isSlider, customLabel) {
+        const pcText = document.querySelector('.photo-expand-prompt .pc-text');
+        const spText = document.querySelector('.photo-expand-prompt .sp-text');
+        if (customLabel) {
+          if (pcText) pcText.textContent = `CLICK TO ${customLabel}`;
+          if (spText) spText.textContent = `TAP TO ${customLabel}`;
+        } else if (isSlider) {
+          if (pcText) pcText.textContent = 'CLICK TO VIEW ALBUM';
+          if (spText) spText.textContent = 'TAP TO VIEW ALBUM';
+        } else {
+          if (pcText) pcText.textContent = 'CLICK TO EXPAND';
+          if (spText) spText.textContent = 'TAP TO EXPAND';
+        }
+      }
+
+      function setMainStagePhoto(photo, work, model) {
+        if (!photo) return;
+
+        updateExpandPromptLabel(false);
+
+        const mainImg = document.getElementById('main-stage-img');
+        const blurImg = document.getElementById('stage-blur-img');
+
+        if (!mainImg) return;
+
+        mainImg.style.opacity = '0.3';
+        mainImg.style.transform = 'scale(0.98)';
+
+        setTimeout(() => {
+          mainImg.src = photo.image;
+          if (blurImg) blurImg.src = photo.image;
+
+          const stageColorChip = document.getElementById('stage-color-chip');
+          if (stageColorChip && model) {
+            stageColorChip.style.backgroundColor = model.color;
+          }
+          const stageBadgeName = document.getElementById('stage-badge-name');
+          if (stageBadgeName && model) {
+            stageBadgeName.textContent = getRomajiName(model.name, model.id);
+          }
+
+          mainImg.style.opacity = '1';
+          mainImg.style.transform = 'scale(1)';
+        }, 100);
+      }
+
+      function initStageControls() {
+        function goPrev() {
+          if (isHeroSliderActive) {
+            prevHeroSlide();
+            return;
+          }
+          if (currentPhotosInWork.length <= 1) return;
+          currentPhotoIndex = (currentPhotoIndex - 1 + currentPhotosInWork.length) % currentPhotosInWork.length;
+          updatePhotoSelection();
+        }
+
+        function goNext() {
+          if (isHeroSliderActive) {
+            nextHeroSlide();
+            return;
+          }
+          if (currentPhotosInWork.length <= 1) return;
+          currentPhotoIndex = (currentPhotoIndex + 1) % currentPhotosInWork.length;
+          updatePhotoSelection();
+        }
+
+        function updatePhotoSelection() {
+          document.querySelectorAll('.photo-thumb-btn').forEach((btn, i) => {
+            btn.classList.toggle('active', i === currentPhotoIndex);
+          });
+          const model = galleryData.find(c => c.id === currentModelId);
+          const work = model?.works.find(w => w.id === currentWorkId);
+          setMainStagePhoto(currentPhotosInWork[currentPhotoIndex], work, model);
+        }
+
+        // モバイルタッチスワイプ
+        const stage = document.getElementById('main-visual-stage');
+        if (stage) {
+          let touchStartX = 0;
+          let touchEndX = 0;
+
+          stage.addEventListener('touchstart', (e) => {
+            touchStartX = e.changedTouches[0].screenX;
+          }, { passive: true });
+
+          stage.addEventListener('touchend', (e) => {
+            touchEndX = e.changedTouches[0].screenX;
+            const diff = touchEndX - touchStartX;
+            if (Math.abs(diff) > 45) {
+              if (diff > 0) goPrev();
+              else goNext();
+            }
+          }, { passive: true });
+        }
+      }
+
+      // ============================================================
+      // HERO SLIDER (トップページ自動スライダー)
+      // ============================================================
+      function startHeroSlider() {
+        isHeroSliderActive = true;
+        updateModalFilteredList(heroSliderList);
+
+        const dotsContainer = document.getElementById('stage-slider-dots');
+        if (dotsContainer) {
+          dotsContainer.classList.add('active');
+          dotsContainer.innerHTML = heroSliderList.map((item, idx) => `
+            <button class="slider-dot ${idx === heroSliderIndex ? 'active' : ''}" data-idx="${idx}" aria-label="${item.modelName} のスライドへ"></button>
+          `).join('');
+
+          dotsContainer.querySelectorAll('.slider-dot').forEach(dot => {
+            dot.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const idx = parseInt(dot.getAttribute('data-idx'), 10);
+              const dir = idx >= heroSliderIndex ? 1 : -1;
+              renderHeroSlide(idx, dir);
+              restartHeroSliderTimer();
+            });
+          });
+        }
+
+        renderHeroSlide(heroSliderIndex);
+        restartHeroSliderTimer();
+      }
+
+      function stopHeroSlider() {
+        isHeroSliderActive = false;
+        if (heroSliderTimer) {
+          clearInterval(heroSliderTimer);
+          heroSliderTimer = null;
+        }
+        const dotsContainer = document.getElementById('stage-slider-dots');
+        if (dotsContainer) {
+          dotsContainer.classList.remove('active');
+        }
+      }
+
+      function restartHeroSliderTimer() {
+        if (heroSliderTimer) clearInterval(heroSliderTimer);
+        heroSliderTimer = setInterval(() => {
+          if (isHeroSliderActive) {
+            nextHeroSlide();
+          }
+        }, 5200);
+      }
+
+      function nextHeroSlide() {
+        if (!heroSliderList || heroSliderList.length === 0) return;
+        const nextIdx = (heroSliderIndex + 1) % heroSliderList.length;
+        renderHeroSlide(nextIdx, 1);
+      }
+
+      function prevHeroSlide() {
+        if (!heroSliderList || heroSliderList.length === 0) return;
+        const prevIdx = (heroSliderIndex - 1 + heroSliderList.length) % heroSliderList.length;
+        renderHeroSlide(prevIdx, -1);
+      }
+
+      function renderHeroSlide(index, direction = 1) {
+        if (!heroSliderList || heroSliderList.length === 0) return;
+        heroSliderIndex = index;
+
+        const currentSlide = heroSliderList[heroSliderIndex];
+        const mainImg = document.getElementById('main-stage-img');
+        const blurImg = document.getElementById('stage-blur-img');
+        const stageColorChip = document.getElementById('stage-color-chip');
+        const stageBadgeName = document.getElementById('stage-badge-name');
+
+        if (stageColorChip) stageColorChip.style.backgroundColor = currentSlide.color;
+
+        if (currentSlide.isLatestPost) {
+          const charName = getRomajiName(currentSlide.modelName, currentSlide.characterId);
+          if (stageBadgeName) stageBadgeName.textContent = `NEW: ${currentSlide.title} (${charName})`;
+          updateExpandPromptLabel(true, `VIEW "${currentSlide.title}"`);
+        } else {
+          if (stageBadgeName) stageBadgeName.textContent = getRomajiName(currentSlide.modelName, currentSlide.characterId);
+          updateExpandPromptLabel(true);
+        }
+
+        document.querySelectorAll('.stage-slider-dots .slider-dot').forEach((dot, i) => {
+          dot.classList.toggle('active', i === heroSliderIndex);
+        });
+
+        morphCharacterColor(currentSlide.color, currentSlide.rgb);
+
+        if (mainImg) {
+          mainImg.style.opacity = '0.3';
+          mainImg.style.transform = `scale(0.97) translateX(${direction * 8}px)`;
+
+          setTimeout(() => {
+            mainImg.src = currentSlide.image;
+            if (blurImg) blurImg.src = currentSlide.image;
+            mainImg.style.opacity = '1';
+            mainImg.style.transform = 'scale(1) translateX(0px)';
+          }, 140);
+        }
+      }
+
+      // ============================================================
+      // FLOATING CHARACTER DOCK
+      // ============================================================
+      function initFloatingDock() {
+        const dockInner = document.getElementById('dock-inner');
+        if (!dockInner) return;
+
+        dockInner.innerHTML = galleryData.map(c => `
+          <button class="dock-item-btn" data-char-id="${c.id}" aria-label="${c.name}">
+            <img src="${c.avatar}" alt="${c.name}" loading="lazy">
+          </button>
+        `).join('');
+
+        dockInner.querySelectorAll('.dock-item-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const cid = btn.getAttribute('data-char-id');
+            if (cid) showWorksView(cid);
+          });
+        });
+      }
+
+      function updateFloatingDockActive(modelId) {
+        document.querySelectorAll('.dock-item-btn').forEach(btn => {
+          btn.classList.toggle('active', btn.getAttribute('data-char-id') === modelId);
+        });
+      }
+
+      // ============================================================
+      // DYNAMIC COLOR MORPHING
+      // ============================================================
+      function morphCharacterColor(hex, rgb) {
+        if (!hex || !rgb) return;
+        document.documentElement.style.setProperty('--char-accent', hex);
+        document.documentElement.style.setProperty('--char-rgb', rgb);
+        document.documentElement.style.setProperty('--char-accent-rgb', rgb);
+        document.documentElement.style.setProperty('--char-glow', `rgba(${rgb}, 0.35)`);
+
+        // RGBから輝度を計算して文字色（白/黒）と輪郭ボーダーを自動設定
+        const parts = rgb.split(',').map(s => parseInt(s.trim(), 10) || 0);
+        const r = parts[0] || 0, g = parts[1] || 0, b = parts[2] || 0;
+        const luminance = (0.299 * r + 0.587 * g + 0.114 * b);
+        const contrastText = luminance > 145 ? '#060608' : '#ffffff';
+        const borderLight = luminance < 70 ? 'rgba(255, 255, 255, 0.28)' : 'transparent';
+        document.documentElement.style.setProperty('--char-accent-text', contrastText);
+        document.documentElement.style.setProperty('--char-accent-border', borderLight);
+      }
+
+      // ============================================================
+      // CINEMATIC FULLSCREEN LIGHTBOX MODAL
+      // ============================================================
+      function updateModalFilteredList(newList) {
+        modalFilteredList = [...newList];
+      }
+
+      function openModal(photoId) {
+        if (!modal) return;
+        const targetIdx = modalFilteredList.findIndex(p => p.id === photoId);
+        modalPhotoIndex = targetIdx !== -1 ? targetIdx : 0;
+
+        resetZoom();
+        renderModalContent();
+        modal.showModal();
+        document.body.style.overflow = 'hidden';
+
+        showSwipeHintFirstTime();
+      }
+
+      function closeModal() {
+        if (!modal) return;
+        modal.close();
+        document.body.style.overflow = '';
+        resetZoom();
+      }
+
+      function renderModalContent() {
+        const photo = modalFilteredList[modalPhotoIndex];
+        if (!photo) return;
+
+        if (modalImg) {
+          modalImg.src = photo.image;
+        }
+        if (modalTitle) modalTitle.textContent = photo.title || photo.workTitle || '';
+        if (modalModel) modalModel.textContent = photo.modelName || '';
+        if (modalBadge) modalBadge.textContent = photo.characterId ? photo.characterId.toUpperCase() : 'PHOTO';
+
+        updateModalLikeButton();
+      }
+
+      function nextModalPhoto() {
+        if (modalFilteredList.length <= 1) return;
+        modalPhotoIndex = (modalPhotoIndex + 1) % modalFilteredList.length;
+        resetZoom();
+        renderModalContent();
+      }
+
+      function prevModalPhoto() {
+        if (modalFilteredList.length <= 1) return;
+        modalPhotoIndex = (modalPhotoIndex - 1 + modalFilteredList.length) % modalFilteredList.length;
+        resetZoom();
+        renderModalContent();
+      }
+
+      function resetZoom() {
+        currentScale = 1;
+        currentPanX = 0;
+        currentPanY = 0;
+        applyTransform();
+      }
+
+      function applyTransform() {
+        if (modalImg) {
+          modalImg.style.transform = `translate3d(${currentPanX}px, ${currentPanY}px, 0) scale(${currentScale})`;
+        }
+      }
+
+      function showSwipeHintFirstTime() {
+        if (!swipeHintEl) return;
+        const seen = localStorage.getItem('miu_swipe_hint_seen');
+        if (!seen && window.innerWidth <= 960) {
+          swipeHintEl.style.display = 'block';
+          swipeHintTimeout = setTimeout(() => {
+            swipeHintEl.style.display = 'none';
+            localStorage.setItem('miu_swipe_hint_seen', 'true');
+          }, 3500);
+        }
+      }
+
+      function initModal() {
+        modalCloseBtn?.addEventListener('click', closeModal);
+        modalNextBtn?.addEventListener('click', nextModalPhoto);
+        modalPrevBtn?.addEventListener('click', prevModalPhoto);
+        modalBackdrop?.addEventListener('click', closeModal);
+
+        // キーボード操作
+        modal?.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') closeModal();
+          if (e.key === 'ArrowRight') nextModalPhoto();
+          if (e.key === 'ArrowLeft') prevModalPhoto();
+        });
+
+        // ピンチズーム & パン & スワイプ
+        if (imageHolder) {
+          imageHolder.addEventListener('touchstart', handleTouchStart, { passive: false });
+          imageHolder.addEventListener('touchmove', handleTouchMove, { passive: false });
+          imageHolder.addEventListener('touchend', handleTouchEnd, { passive: true });
+        }
+
+        // ダブルタップズーム
+        modalImg?.addEventListener('click', (e) => {
+          const now = Date.now();
+          if (now - lastTapTime < 300) {
+            e.preventDefault();
+            if (currentScale > 1) {
+              resetZoom();
+            } else {
+              currentScale = 2.4;
+              applyTransform();
+            }
+          }
+          lastTapTime = now;
+        });
+      }
+
+      function handleTouchStart(e) {
+        if (e.touches.length === 2) {
+          isPinching = true;
+          startPinchDist = getDistance(e.touches[0], e.touches[1]);
+          startScale = currentScale;
+        } else if (e.touches.length === 1) {
+          touchStartX = e.touches[0].clientX;
+          touchStartY = e.touches[0].clientY;
+          startPanX = currentPanX;
+          startPanY = currentPanY;
+          if (currentScale > 1) {
+            isPanning = true;
+          }
+        }
+      }
+
+      function handleTouchMove(e) {
+        if (isPinching && e.touches.length === 2) {
+          e.preventDefault();
+          const dist = getDistance(e.touches[0], e.touches[1]);
+          currentScale = Math.min(Math.max(1, startScale * (dist / startPinchDist)), 4);
+          applyTransform();
+        } else if (isPanning && e.touches.length === 1) {
+          e.preventDefault();
+          const dx = e.touches[0].clientX - touchStartX;
+          const dy = e.touches[0].clientY - touchStartY;
+          currentPanX = startPanX + dx;
+          currentPanY = startPanY + dy;
+          applyTransform();
+        }
+      }
+
+      function handleTouchEnd(e) {
+        if (isPinching) {
+          isPinching = false;
+          if (currentScale <= 1.05) resetZoom();
+        } else if (!isPanning && e.changedTouches.length === 1) {
+          const dx = e.changedTouches[0].clientX - touchStartX;
+          const dy = e.changedTouches[0].clientY - touchStartY;
+          if (currentScale === 1 && Math.abs(dx) > 45 && Math.abs(dy) < 60) {
+            if (dx > 0) prevModalPhoto();
+            else nextModalPhoto();
+          }
+        }
+        isPanning = false;
+      }
+
+      function getDistance(t1, t2) {
+        return Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+      }
+
+      // ============================================================
+      // ABOUT / INFO MODAL
+      // ============================================================
+      function initAboutModal() {
+        const infoModal = document.getElementById('info-modal');
+        const openBtn = document.getElementById('info-open-btn');
+        const closeBtn = document.getElementById('info-close-btn');
+
+        openBtn?.addEventListener('click', () => {
+          infoModal?.showModal();
+        });
+
+        closeBtn?.addEventListener('click', () => {
+          infoModal?.close();
+        });
+
+        infoModal?.addEventListener('click', (e) => {
+          if (e.target === infoModal) infoModal.close();
+        });
+      }
+
+      // ============================================================
+      // LIKES & COMMENTS FUNCTIONALITY
+      // ============================================================
+      function isPostLiked(dbId) {
+        if (!dbId) return false;
+        const liked = JSON.parse(localStorage.getItem('miu_liked_posts') || '[]');
+        return liked.includes(dbId.toString());
+      }
+
+      function markPostAsLiked(dbId) {
+        if (!dbId) return;
+        const liked = JSON.parse(localStorage.getItem('miu_liked_posts') || '[]');
+        if (!liked.includes(dbId.toString())) {
+          liked.push(dbId.toString());
+          localStorage.setItem('miu_liked_posts', JSON.stringify(liked));
+        }
+      }
+
+      function triggerLikeAnimation(e) {
+        if (!currentWork || !currentWork.databaseId) return;
+        const dbId = currentWork.databaseId;
+        if (isPostLiked(dbId)) return;
+
+        markPostAsLiked(dbId);
+        currentWork.likeCount++;
+        updateWorkStatsUI();
+
+        // Heart burst animation
+        const heart = document.createElement('div');
+        heart.className = 'fixed pointer-events-none z-[99999] transform -translate-x-1/2 -translate-y-1/2 animate-heart-burst';
+        heart.innerHTML = `<svg viewBox="0 0 24 24" class="w-28 h-28 fill-current text-rose-500 drop-shadow-[0_0_30px_rgba(244,63,94,0.8)]"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`;
+        heart.style.left = (e?.clientX || window.innerWidth / 2) + 'px';
+        heart.style.top = (e?.clientY || window.innerHeight / 2) + 'px';
+        document.body.appendChild(heart);
+        setTimeout(() => heart.remove(), 1000);
+
+        if (window.WP_GRAPHQL_URL) {
+          fetch(window.WP_GRAPHQL_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              query: `mutation IncrementLike($postId: Int!) { incrementLike(input: {postId: $postId}) { newCount } }`,
+              variables: { postId: parseInt(dbId) }
+            })
+          }).catch(err => console.error('Like request failed', err));
+        }
+      }
+
+      function updateWorkStatsUI() {
+        if (!currentWork) return;
+        const likeCountEl = document.getElementById('work-like-count');
+        const commentCountEl = document.getElementById('work-comment-count');
+        const workLikeBtn = document.getElementById('work-like-btn');
+        const isLiked = isPostLiked(currentWork.databaseId);
+
+        if (likeCountEl) likeCountEl.textContent = (currentWork.likeCount || 0).toLocaleString();
+        if (commentCountEl) commentCountEl.textContent = (currentWork.guestComments?.length || 0).toString();
+        if (workLikeBtn) {
+          if (isLiked) workLikeBtn.classList.add('is-liked');
+          else workLikeBtn.classList.remove('is-liked');
+        }
+        updateModalLikeButton();
+      }
+
+      function updateModalLikeButton() {
+        const modalLikeBtn = document.getElementById('modal-like-btn');
+        if (!modalLikeBtn || !currentWork) return;
+        const isLiked = isPostLiked(currentWork.databaseId);
+        if (isLiked) {
+          modalLikeBtn.classList.add('text-rose-500', 'fill-current');
+          modalLikeBtn.style.color = 'var(--char-accent)';
+        } else {
+          modalLikeBtn.classList.remove('text-rose-500', 'fill-current');
+          modalLikeBtn.style.color = '';
+        }
+      }
+
+      function fetchLiveStats(postId) {
+        if (!window.WP_GRAPHQL_URL || !postId) return;
+        fetch(window.WP_GRAPHQL_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query: `query GetLiveStats($postId: Int!) { liveArtworkStats(postId: $postId) { likeCount guestComments { id parentId author content date } } }`,
+            variables: { postId: parseInt(postId) }
+          })
+        })
+        .then(res => res.json())
+        .then(res => {
+          const stats = res?.data?.liveArtworkStats;
+          if (stats && currentWork && currentWork.databaseId == postId) {
+            currentWork.likeCount = stats.likeCount || 0;
+            currentWork.guestComments = stats.guestComments || [];
+            updateWorkStatsUI();
+            renderComments();
+          }
+        })
+        .catch(err => console.error(err));
+      }
+
+      function renderComments() {
+        if (!commentList || !currentWork) return;
+        const comments = currentWork.guestComments || [];
+        const modalCount = document.getElementById('modal-comment-count');
+        if (modalCount) modalCount.textContent = comments.length;
+
+        if (comments.length === 0) {
+          commentList.innerHTML = '<p class="text-gray-500 font-light text-center py-10">まだコメントはありません。<br/>最初のコメントを投稿しよう！</p>';
+          return;
+        }
+
+        const topComments = comments.filter(c => !c.parentId || c.parentId === 0);
+        commentList.innerHTML = topComments.map(c => {
+          const replies = comments.filter(r => r.parentId === c.id);
+          return `
+            <div class="bg-white/5 border border-white/5 rounded-2xl p-3 text-xs">
+              <div class="flex items-baseline justify-between mb-1.5">
+                <span class="text-white font-medium">${c.author || '名無しさん'}</span>
+                <span class="text-gray-500 text-[10px]">${c.date ? new Date(c.date).toLocaleDateString() : 'Just now'}</span>
+              </div>
+              <p class="text-gray-300 font-light leading-relaxed mb-2">${c.content}</p>
+              <button class="btn-reply text-[10px] text-gray-500 hover:text-rose-400 flex items-center gap-1 outline-none" data-reply-id="${c.id}" data-reply-author="${c.author || '名無しさん'}">
+                <span>↩ 返信する</span>
+              </button>
+              ${replies.length > 0 ? `
+                <div class="space-y-2 mt-2 ml-4 border-l-2 border-rose-500/40 pl-2">
+                  ${replies.map(r => `
+                    <div class="bg-white/5 rounded-xl p-2">
+                      <div class="flex items-baseline justify-between mb-1">
+                        <span class="text-white font-medium text-[11px]">${r.author || '名無しさん'}</span>
+                        <span class="text-gray-500 text-[9px]">${r.date ? new Date(r.date).toLocaleDateString() : 'Just now'}</span>
+                      </div>
+                      <p class="text-gray-300 font-light leading-relaxed">${r.content}</p>
+                    </div>
+                  `).join('')}
+                </div>
+              ` : ''}
+            </div>
+          `;
+        }).join('');
+
+        commentList.querySelectorAll('.btn-reply').forEach(btn => {
+          btn.addEventListener('click', () => {
+            activeReplyId = parseInt(btn.getAttribute('data-reply-id'));
+            const name = btn.getAttribute('data-reply-author');
+            const indicator = document.getElementById('reply-indicator');
+            const nameSpan = document.getElementById('reply-indicator-name');
+            if (indicator && nameSpan) {
+              nameSpan.textContent = name;
+              indicator.classList.remove('hidden');
+              indicator.classList.add('flex');
+            }
+            commentContentInput?.focus();
+          });
+        });
+      }
+
+      function cancelReply() {
+        activeReplyId = 0;
+        const indicator = document.getElementById('reply-indicator');
+        if (indicator) {
+          indicator.classList.add('hidden');
+          indicator.classList.remove('flex');
+        }
+      }
+
+      function openCommentModal() {
+        renderComments();
+        if (commentModal && commentModalContent) {
+          commentModal.showModal();
+          setTimeout(() => {
+            commentModalContent.style.transform = 'scale(1)';
+            commentModalContent.style.opacity = '1';
+          }, 10);
+          commentModal.onclick = (e) => {
+            if (e.target === commentModal) closeCommentModal();
+          };
+        }
+      }
+
+      function closeCommentModal() {
+        if (commentModal && commentModalContent) {
+          commentModalContent.style.transform = 'scale(0.95)';
+          commentModalContent.style.opacity = '0';
+          setTimeout(() => {
+            commentModal.close();
+            cancelReply();
+          }, 250);
+        }
+      }
+
+      function submitComment() {
+        if (!currentWork || !currentWork.databaseId) {
+          alert("エラー：作品が選択されていません。");
+          return;
+        }
+        const author = (commentAuthorInput?.value || '').trim() || '名無しさん';
+        const content = (commentContentInput?.value || '').trim();
+
+        if (!content) {
+          alert("コメントを入力してください！");
+          return;
+        }
+
+        if (commentSubmitBtn) {
+          commentSubmitBtn.disabled = true;
+          commentSubmitBtn.textContent = '送信中...';
+        }
+
+        if (window.WP_GRAPHQL_URL) {
+          fetch(window.WP_GRAPHQL_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              query: `mutation AddComment($postId: Int!, $author: String!, $content: String!, $parentId: ID) {
+                createComment(input: {
+                  commentOn: $postId,
+                  author: $author,
+                  content: $content,
+                  parent: $parentId
+                }) {
+                  success
+                  comment { id date content }
+                }
+              }`,
+              variables: {
+                postId: parseInt(currentWork.databaseId),
+                author: author,
+                content: content,
+                parentId: activeReplyId ? String(activeReplyId) : null
+              }
+            })
+          })
+          .then(res => res.json())
+          .then(res => {
+            if (res?.data?.createComment?.success) {
+              if (commentContentInput) commentContentInput.value = '';
+              cancelReply();
+              fetchLiveStats(currentWork.databaseId);
+            } else {
+              alert("コメントの投稿に失敗しました。時間をおいて再試行してください。");
+            }
+          })
+          .catch(err => {
+            console.error(err);
+            alert("ネットワークエラーが発生しました。");
+          })
+          .finally(() => {
+            if (commentSubmitBtn) {
+              commentSubmitBtn.disabled = false;
+              commentSubmitBtn.textContent = '送信';
+            }
+          });
+        }
+      }
+
+      function initLikesAndComments() {
+        document.getElementById('work-like-btn')?.addEventListener('click', (e) => triggerLikeAnimation(e));
+        document.getElementById('modal-like-btn')?.addEventListener('click', (e) => triggerLikeAnimation(e));
+
+        document.getElementById('work-comment-btn')?.addEventListener('click', openCommentModal);
+        document.getElementById('modal-comment-btn')?.addEventListener('click', openCommentModal);
+
+        document.getElementById('btn-close-comment-modal')?.addEventListener('click', closeCommentModal);
+        document.getElementById('btn-cancel-reply')?.addEventListener('click', cancelReply);
+        commentSubmitBtn?.addEventListener('click', submitComment);
+      }
+
+      // ============================================================
+      // CUSTOM CURSOR & 3D TILT
+      // ============================================================
+      function initCustomCursor() {
+        const cursor = document.getElementById('custom-cursor');
+        if (!cursor || window.matchMedia('(pointer: coarse)').matches) return;
+
+        let mouseX = window.innerWidth / 2;
+        let mouseY = window.innerHeight / 2;
+        let ringX = mouseX;
+        let ringY = mouseY;
+
+        window.addEventListener('mousemove', (e) => {
+          mouseX = e.clientX;
+          mouseY = e.clientY;
+          cursor.style.left = `${mouseX}px`;
+          cursor.style.top = `${mouseY}px`;
+        });
+
+        window.rebindCursorHovers = function() {
+          document.querySelectorAll('button, a, .char-select-card, .work-album-card, .photo-thumb-btn, .stage-photo-wrapper').forEach(el => {
+            el.addEventListener('mouseenter', () => {
+              if (el.classList.contains('stage-photo-wrapper')) {
+                cursor.classList.add('is-expand');
+              } else {
+                cursor.classList.add('is-hovering');
+              }
+            });
+            el.addEventListener('mouseleave', () => {
+              cursor.classList.remove('is-hovering', 'is-expand');
+            });
+          });
+        };
+
+        window.rebindCursorHovers();
+      }
+
+      function init3DTilt() {
+        const tiltEl = document.querySelector('.tilt-element');
+        if (!tiltEl || window.matchMedia('(pointer: coarse)').matches) return;
+
+        tiltEl.addEventListener('mousemove', (e) => {
+          const rect = tiltEl.getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          const y = e.clientY - rect.top;
+          const centerX = rect.width / 2;
+          const centerY = rect.height / 2;
+          const rotateX = ((y - centerY) / centerY) * -6;
+          const rotateY = ((x - centerX) / centerX) * 6;
+
+          tiltEl.style.transform = `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`;
+        });
+
+        tiltEl.addEventListener('mouseleave', () => {
+          tiltEl.style.transform = 'perspective(1000px) rotateX(0deg) rotateY(0deg)';
+        });
+      }
+
+      // ============================================================
+      // EXPLORE MODE: INFINITE PHOTO STREAM MODULE
+      // ============================================================
+      const exploreState = {
+        active: false,
+        photoIndex: 0,
+        currentModelId: '',
+        scale: 1,
+        panX: 0,
+        panY: 0,
+        tagsOpen: false,
+        uiVisible: true,
+        uiTimeout: null,
+      };
+
+      // EXPLORE DOM 要素
+      const exploreViewport = document.getElementById('explore-viewport');
+      const exploreCurrentImg = document.getElementById('explore-current-img');
+      const exploreBlurImg = document.getElementById('explore-blur-img');
+      const exploreStageArea = document.getElementById('explore-stage-area');
+      const exploreImageWrapper = document.getElementById('explore-image-wrapper');
+      const exploreUiOverlay = document.getElementById('explore-ui-overlay');
+      const explorePrevBtn = document.getElementById('explore-prev-btn');
+      const exploreNextBtn = document.getElementById('explore-next-btn');
+      const exploreModelName = document.getElementById('explore-model-name');
+      const exploreModelChip = document.getElementById('explore-model-chip');
+      const exploreWorkTitle = document.getElementById('explore-work-title');
+      const exploreIndexPill = document.getElementById('explore-index-pill');
+      const exploreLikeBtn = document.getElementById('explore-like-btn');
+      const exploreLikeCount = document.getElementById('explore-like-count');
+      const exploreTagsBtn = document.getElementById('explore-tags-btn');
+      const exploreCloseBtn = document.getElementById('explore-close-btn');
+
+      // AI Tags Bottom Sheet DOM
+      const exploreTagsSheet = document.getElementById('explore-tags-sheet');
+      const sheetBackdrop = document.getElementById('explore-sheet-backdrop');
+      const sheetCloseBtn = document.getElementById('sheet-close-btn');
+      const sheetModelName = document.getElementById('sheet-model-name');
+      const sheetWorkTitle = document.getElementById('sheet-work-title');
+      const sheetTagsList = document.getElementById('sheet-tags-list');
+      const sheetSummaryText = document.getElementById('sheet-summary-text');
+
+      // ヒントオーバーレイ DOM
+      const exploreHintOverlay = document.getElementById('explore-hint-overlay');
+      const exploreHintOkBtn = document.getElementById('explore-hint-ok-btn');
+      const exploreHintCloseTop = document.getElementById('explore-hint-close-top');
+
+      // モード切替タブ DOM
+      const modeTabGallery = document.getElementById('mode-tab-gallery');
+      const modeTabExplore = document.getElementById('mode-tab-explore');
+
+      // タッチ・ジェスチャー制御変数
+      let expTouchStartX = 0;
+      let expTouchStartY = 0;
+      let expStartPanX = 0;
+      let expStartPanY = 0;
+      let expStartDist = 0;
+      let expStartScale = 1;
+      let expIsPinching = false;
+      let expIsPanning = false;
+      let expLongPressTimer = null;
+      let expLastTapTime = 0;
+      let expSingleTapTimer = null;
+      let expWheelLock = false;
+
+      function initExploreMode() {
+        if (!exploreViewport) return;
+
+        // モード切替タブ
+        modeTabGallery?.addEventListener('click', () => switchViewMode('gallery'));
+        modeTabExplore?.addEventListener('click', () => switchViewMode('explore'));
+
+        // ヘッダー・アクション
+        exploreCloseBtn?.addEventListener('click', () => switchViewMode('gallery'));
+        exploreLikeBtn?.addEventListener('click', (e) => triggerExploreLike(e));
+        exploreTagsBtn?.addEventListener('click', openExploreTagsSheet);
+
+        // PC 矢印ボタン
+        explorePrevBtn?.addEventListener('click', (e) => {
+          e.stopPropagation();
+          prevExplorePhoto();
+        });
+        exploreNextBtn?.addEventListener('click', (e) => {
+          e.stopPropagation();
+          nextExplorePhoto();
+        });
+
+        // Bottom Sheet 閉じる
+        sheetBackdrop?.addEventListener('click', closeExploreTagsSheet);
+        sheetCloseBtn?.addEventListener('click', closeExploreTagsSheet);
+
+        // 操作ヒント閉じる処理 (ボタン・右上の✕・背景タップ)
+        const closeExploreHint = () => {
+          if (exploreHintOverlay) exploreHintOverlay.style.display = 'none';
+          localStorage.setItem('miu_explore_hint_seen', 'true');
+        };
+
+        exploreHintOkBtn?.addEventListener('click', closeExploreHint);
+        exploreHintCloseTop?.addEventListener('click', closeExploreHint);
+        exploreHintOverlay?.addEventListener('click', (e) => {
+          if (e.target === exploreHintOverlay) closeExploreHint();
+        });
+
+        // モバイルタッチジェスチャー設定
+        bindExploreTouchEvents();
+
+        // PC デスクトップ操作設定
+        bindExploreDesktopEvents();
+
+        // 初期URL確認 (?mode=explore)
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('mode') === 'explore') {
+          switchViewMode('explore', false);
+        }
+
+        // ブラウザ「戻る」「進む」履歴の監視
+        window.addEventListener('popstate', () => {
+          const mode = new URLSearchParams(window.location.search).get('mode');
+          if (mode === 'explore') {
+            if (!exploreState.active) switchViewMode('explore', false);
+          } else {
+            if (exploreState.active) {
+              switchViewMode('gallery', false);
+              showCharactersView();
+              if (window.innerWidth <= 960) {
+                window.scrollTo({ top: 0, behavior: 'instant' });
+              }
+            }
+          }
+        });
+      }
+
+      function switchViewMode(mode, updateHistory = true) {
+        if (mode === 'explore') {
+          exploreState.active = true;
+          stopHeroSlider();
+
+          modeTabGallery?.classList.remove('active');
+          modeTabGallery?.setAttribute('aria-selected', 'false');
+          modeTabExplore?.classList.add('active');
+          modeTabExplore?.setAttribute('aria-selected', 'true');
+
+          if (exploreViewport) exploreViewport.style.display = 'flex';
+
+          // GALLERY表示中であればその写真を優先的に引き継ぐ
+          let targetIndex = 0;
+          const currentPhoto = currentPhotosInWork[currentPhotoIndex];
+          if (currentPhoto) {
+            const foundIdx = allPhotosFlat.findIndex(p => p.id === currentPhoto.id);
+            if (foundIdx !== -1) targetIndex = foundIdx;
+          } else if (currentModelId) {
+            const foundIdx = allPhotosFlat.findIndex(p => p.characterId === currentModelId);
+            if (foundIdx !== -1) targetIndex = foundIdx;
+          }
+
+          setExplorePhoto(targetIndex);
+          checkExploreHint();
+
+          if (updateHistory) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('mode', 'explore');
+            window.history.pushState({ mode: 'explore' }, '', url.toString());
+          }
+        } else {
+          exploreState.active = false;
+          closeExploreTagsSheet();
+          resetExploreZoom();
+
+          modeTabGallery?.classList.add('active');
+          modeTabGallery?.setAttribute('aria-selected', 'true');
+          modeTabExplore?.classList.remove('active');
+          modeTabExplore?.setAttribute('aria-selected', 'false');
+
+          if (exploreViewport) exploreViewport.style.display = 'none';
+
+          if (exploreState.uiTimeout) {
+            clearTimeout(exploreState.uiTimeout);
+            exploreState.uiTimeout = null;
+          }
+
+          // GALLERYトップ表示中ならスライダー再開
+          if (!document.body.classList.contains('is-subpage')) {
+            startHeroSlider();
+          }
+
+          if (updateHistory) {
+            const url = new URL(window.location.href);
+            url.searchParams.delete('mode');
+            window.history.pushState({ mode: 'gallery' }, '', url.toString());
+          }
+        }
+      }
+
+      function setExplorePhoto(index, dirX = 0, dirY = 0) {
+        if (!allPhotosFlat || allPhotosFlat.length === 0) return;
+
+        // 無限ループインデックスの計算
+        const total = allPhotosFlat.length;
+        const normalizedIndex = ((index % total) + total) % total;
+        exploreState.photoIndex = normalizedIndex;
+
+        const photo = allPhotosFlat[normalizedIndex];
+        if (!photo) return;
+
+        exploreState.currentModelId = photo.characterId;
+
+        // ズーム解除
+        resetExploreZoom();
+
+        // 画像切り替えとシネマティックフェード＆スライド演出
+        if (exploreCurrentImg) {
+          const exitX = dirX !== 0 ? dirX * -20 : 0;
+          const exitY = dirY !== 0 ? dirY * -24 : 0;
+          exploreCurrentImg.style.transition = 'opacity 0.15s ease-out, transform 0.15s ease-out';
+          exploreCurrentImg.style.opacity = '0.05';
+          exploreCurrentImg.style.transform = `translate3d(${exitX}px, ${exitY}px, 0) scale(0.98)`;
+
+          setTimeout(() => {
+            exploreCurrentImg.src = photo.image;
+
+            const enterX = dirX !== 0 ? dirX * 24 : 0;
+            const enterY = dirY !== 0 ? dirY * 28 : 0;
+            exploreCurrentImg.style.transition = 'none';
+            exploreCurrentImg.style.transform = `translate3d(${enterX}px, ${enterY}px, 0) scale(0.98)`;
+
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                exploreCurrentImg.style.transition = 'opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1), transform 0.28s cubic-bezier(0.22, 1, 0.36, 1)';
+                exploreCurrentImg.style.opacity = '1';
+                exploreCurrentImg.style.transform = 'translate3d(0, 0, 0) scale(1)';
+              });
+            });
+          }, 130);
+        }
+
+        if (exploreBlurImg) {
+          exploreBlurImg.src = photo.image;
+        }
+
+        // モデル名 & キャラクターカラー
+        if (exploreModelName) exploreModelName.textContent = photo.modelName || 'Miu';
+        if (exploreModelChip) {
+          exploreModelChip.style.backgroundColor = photo.modelColor || '#f43f5e';
+          exploreModelChip.style.boxShadow = `0 0 10px ${photo.modelColor || '#f43f5e'}`;
+        }
+        morphCharacterColor(photo.modelColor, photo.modelRgb);
+
+        // 作品名
+        if (exploreWorkTitle) exploreWorkTitle.textContent = photo.workTitle || photo.title;
+
+        // 作品内での写真位置 (例: 03 / 12)
+        const workPhotos = allPhotosFlat.filter(p => p.workId === photo.workId);
+        const currentPhotoInWorkIdx = workPhotos.findIndex(p => p.id === photo.id);
+        const posInWork = currentPhotoInWorkIdx !== -1 ? currentPhotoInWorkIdx + 1 : 1;
+        const totalInWork = workPhotos.length > 0 ? workPhotos.length : 1;
+        if (exploreIndexPill) {
+          exploreIndexPill.textContent = `${String(posInWork).padStart(2, '0')} / ${String(totalInWork).padStart(2, '0')}`;
+        }
+
+        // Like状態の更新
+        updateExploreLikeUI(photo);
+
+        // プリロード
+        preloadExploreImages(normalizedIndex);
+
+        // UI表示タイマー
+        kickExploreUiTimer();
+      }
+
+      function nextExplorePhoto() {
+        setExplorePhoto(exploreState.photoIndex + 1, 1, 0);
+      }
+
+      function prevExplorePhoto() {
+        setExplorePhoto(exploreState.photoIndex - 1, -1, 0);
+      }
+
+      function nextExploreModel() {
+        if (!galleryData || galleryData.length === 0) return;
+        const currentModelIdx = galleryData.findIndex(m => m.id === exploreState.currentModelId);
+        const nextModelIdx = (currentModelIdx + 1) % galleryData.length;
+        const nextModel = galleryData[nextModelIdx];
+        if (!nextModel) return;
+
+        const targetPhotoIdx = allPhotosFlat.findIndex(p => p.characterId === nextModel.id);
+        if (targetPhotoIdx !== -1) {
+          setExplorePhoto(targetPhotoIdx, 0, 1);
+        }
+      }
+
+      function prevExploreModel() {
+        if (!galleryData || galleryData.length === 0) return;
+        const currentModelIdx = galleryData.findIndex(m => m.id === exploreState.currentModelId);
+        const prevModelIdx = (currentModelIdx - 1 + galleryData.length) % galleryData.length;
+        const prevModel = galleryData[prevModelIdx];
+        if (!prevModel) return;
+
+        const targetPhotoIdx = allPhotosFlat.findIndex(p => p.characterId === prevModel.id);
+        if (targetPhotoIdx !== -1) {
+          setExplorePhoto(targetPhotoIdx, 0, -1);
+        }
+      }
+
+      function preloadExploreImages(currIdx) {
+        if (!allPhotosFlat || allPhotosFlat.length === 0) return;
+        const total = allPhotosFlat.length;
+        const nextIdx = (currIdx + 1) % total;
+        const prevIdx = (currIdx - 1 + total) % total;
+
+        const preload = (url) => {
+          if (!url) return;
+          const img = new Image();
+          img.src = url;
+        };
+
+        preload(allPhotosFlat[nextIdx]?.image);
+        preload(allPhotosFlat[prevIdx]?.image);
+
+        // 次モデルの先頭写真もプリロード
+        const currentModelIdx = galleryData.findIndex(m => m.id === exploreState.currentModelId);
+        if (currentModelIdx !== -1) {
+          const nextModel = galleryData[(currentModelIdx + 1) % galleryData.length];
+          const nextModelPhoto = allPhotosFlat.find(p => p.characterId === nextModel?.id);
+          if (nextModelPhoto) preload(nextModelPhoto.image);
+        }
+      }
+
+      function updateExploreLikeUI(photo) {
+        if (!exploreLikeBtn || !photo) return;
+        const isLiked = isPostLiked(photo.databaseId);
+        exploreLikeBtn.classList.toggle('is-liked', isLiked);
+
+        // 作品全体のLike数を反映
+        const model = galleryData.find(m => m.id === photo.characterId);
+        const work = model?.works.find(w => w.id === photo.workId);
+        if (exploreLikeCount && work) {
+          exploreLikeCount.textContent = (work.likeCount || 0).toLocaleString();
+        }
+      }
+
+      function triggerExploreLike(e) {
+        const photo = allPhotosFlat[exploreState.photoIndex];
+        if (!photo || !photo.databaseId) return;
+
+        const model = galleryData.find(m => m.id === photo.characterId);
+        const work = model?.works.find(w => w.id === photo.workId);
+
+        if (!isPostLiked(photo.databaseId)) {
+          markPostAsLiked(photo.databaseId);
+          if (work) work.likeCount = (work.likeCount || 0) + 1;
+        }
+
+        updateExploreLikeUI(photo);
+        updateWorkStatsUI();
+
+        // ハートバーストアニメーション
+        const heart = document.createElement('div');
+        heart.className = 'fixed pointer-events-none z-[99999] transform -translate-x-1/2 -translate-y-1/2 animate-heart-burst';
+        heart.innerHTML = `<svg viewBox="0 0 24 24" class="w-28 h-28 fill-current text-rose-500 drop-shadow-[0_0_30px_rgba(244,63,94,0.85)]"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`;
+        heart.style.left = (e?.clientX || window.innerWidth / 2) + 'px';
+        heart.style.top = (e?.clientY || window.innerHeight / 2) + 'px';
+        document.body.appendChild(heart);
+        setTimeout(() => heart.remove(), 1000);
+
+        // バックエンド GraphQL 同期
+        if (window.WP_GRAPHQL_URL) {
+          fetch(window.WP_GRAPHQL_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              query: `mutation IncrementLike($postId: Int!) { incrementLike(input: {postId: $postId}) { newCount } }`,
+              variables: { postId: parseInt(photo.databaseId) }
+            })
+          }).catch(err => console.error('Explore like failed', err));
+        }
+      }
+
+      function openExploreTagsSheet() {
+        const photo = allPhotosFlat[exploreState.photoIndex];
+        if (!photo || !exploreTagsSheet) return;
+
+        if (sheetModelName) sheetModelName.textContent = photo.modelName || '';
+        if (sheetWorkTitle) sheetWorkTitle.textContent = photo.workTitle || photo.title || '';
+
+        // AI Tags
+        if (sheetTagsList) {
+          const tags = Array.isArray(photo.aiTags) && photo.aiTags.length > 0 ? photo.aiTags : [];
+          if (tags.length > 0) {
+            sheetTagsList.innerHTML = tags.map(tag => `
+              <span class="explore-tag-item">#${tag}</span>
+            `).join('');
+          } else {
+            sheetTagsList.innerHTML = '<span class="text-gray-500 text-xs font-light">タグ情報はありません</span>';
+          }
+        }
+
+        // AI Summary
+        if (sheetSummaryText) {
+          sheetSummaryText.textContent = photo.aiSummary && photo.aiSummary.trim() !== ''
+            ? photo.aiSummary
+            : 'タグ情報はありません';
+        }
+
+        exploreTagsSheet.classList.add('is-open');
+        exploreState.tagsOpen = true;
+      }
+
+      function closeExploreTagsSheet() {
+        if (!exploreTagsSheet) return;
+        exploreTagsSheet.classList.remove('is-open');
+        exploreState.tagsOpen = false;
+      }
+
+      function resetExploreZoom() {
+        exploreState.scale = 1;
+        exploreState.panX = 0;
+        exploreState.panY = 0;
+        applyExploreTransform();
+      }
+
+      function applyExploreTransform() {
+        if (exploreImageWrapper) {
+          exploreImageWrapper.style.transform = `translate3d(${exploreState.panX}px, ${exploreState.panY}px, 0) scale(${exploreState.scale})`;
+        }
+      }
+
+      function toggleExploreUi() {
+        exploreState.uiVisible = !exploreState.uiVisible;
+        if (exploreUiOverlay) {
+          exploreUiOverlay.classList.toggle('ui-hidden', !exploreState.uiVisible);
+        }
+        if (exploreState.uiVisible) {
+          kickExploreUiTimer();
+        }
+      }
+
+      function kickExploreUiTimer() {
+        if (exploreState.uiTimeout) clearTimeout(exploreState.uiTimeout);
+        exploreState.uiVisible = true;
+        if (exploreUiOverlay) exploreUiOverlay.classList.remove('ui-hidden');
+
+        exploreState.uiTimeout = setTimeout(() => {
+          if (exploreState.active && !exploreState.tagsOpen && exploreState.scale === 1) {
+            exploreState.uiVisible = false;
+            if (exploreUiOverlay) exploreUiOverlay.classList.add('ui-hidden');
+          }
+        }, 3600);
+      }
+
+      function checkExploreHint() {
+        const seen = localStorage.getItem('miu_explore_hint_seen');
+        if (!seen && exploreHintOverlay) {
+          exploreHintOverlay.style.display = 'flex';
+        }
+      }
+
+      function bindExploreTouchEvents() {
+        if (!exploreStageArea) return;
+
+        exploreStageArea.addEventListener('touchstart', (e) => {
+          if (!exploreState.active) return;
+          kickExploreUiTimer();
+
+          if (e.touches.length === 2) {
+            if (expLongPressTimer) clearTimeout(expLongPressTimer);
+            expIsPinching = true;
+            expStartDist = getDistance(e.touches[0], e.touches[1]);
+            expStartScale = exploreState.scale;
+          } else if (e.touches.length === 1) {
+            expTouchStartX = e.touches[0].clientX;
+            expTouchStartY = e.touches[0].clientY;
+            expStartPanX = exploreState.panX;
+            expStartPanY = exploreState.panY;
+
+            if (exploreState.scale > 1) {
+              expIsPanning = true;
+            }
+
+            // 長押し判定 (550ms)
+            if (expLongPressTimer) clearTimeout(expLongPressTimer);
+            expLongPressTimer = setTimeout(() => {
+              if (exploreState.scale === 1 && !expIsPanning && !expIsPinching) {
+                openExploreTagsSheet();
+              }
+            }, 550);
+          }
+        }, { passive: false });
+
+        exploreStageArea.addEventListener('touchmove', (e) => {
+          if (!exploreState.active) return;
+
+          if (expIsPinching && e.touches.length === 2) {
+            e.preventDefault();
+            const dist = getDistance(e.touches[0], e.touches[1]);
+            exploreState.scale = Math.min(Math.max(1, expStartScale * (dist / expStartDist)), 4);
+            applyExploreTransform();
+          } else if (expIsPanning && e.touches.length === 1) {
+            e.preventDefault();
+            const dx = e.touches[0].clientX - expTouchStartX;
+            const dy = e.touches[0].clientY - expTouchStartY;
+            exploreState.panX = expStartPanX + dx;
+            exploreState.panY = expStartPanY + dy;
+            applyExploreTransform();
+          } else if (e.touches.length === 1) {
+            const dx = Math.abs(e.touches[0].clientX - expTouchStartX);
+            const dy = Math.abs(e.touches[0].clientY - expTouchStartY);
+            if (dx > 12 || dy > 12) {
+              if (expLongPressTimer) clearTimeout(expLongPressTimer);
+            }
+          }
+        }, { passive: false });
+
+        exploreStageArea.addEventListener('touchend', (e) => {
+          if (!exploreState.active) return;
+          if (expLongPressTimer) clearTimeout(expLongPressTimer);
+
+          if (expIsPinching) {
+            expIsPinching = false;
+            if (exploreState.scale <= 1.05) resetExploreZoom();
+            return;
+          }
+
+          if (expIsPanning) {
+            expIsPanning = false;
+            return;
+          }
+
+          if (e.changedTouches.length === 1) {
+            const touch = e.changedTouches[0];
+            const dx = touch.clientX - expTouchStartX;
+            const dy = touch.clientY - expTouchStartY;
+            const absX = Math.abs(dx);
+            const absY = Math.abs(dy);
+
+            // ズーム中はスワイプ無効（パン優先）
+            if (exploreState.scale === 1) {
+              // 横スワイプ優先判定 (写真送り)
+              if (absX > absY && absX > 40) {
+                if (dx < 0) nextExplorePhoto();
+                else prevExplorePhoto();
+                return;
+              }
+
+              // 縦スワイプ判定 (モデル切り替え)
+              if (absY > absX && absY > 50) {
+                if (dy < 0) nextExploreModel();
+                else prevExploreModel();
+                return;
+              }
+
+              // タップ判定 (移動が微小な場合)
+              if (absX < 12 && absY < 12) {
+                const now = Date.now();
+                if (now - expLastTapTime < 280) {
+                  // ダブルタップ: Like
+                  if (expSingleTapTimer) clearTimeout(expSingleTapTimer);
+                  expLastTapTime = 0;
+                  triggerExploreLike({ clientX: touch.clientX, clientY: touch.clientY });
+                } else {
+                  // シングルタップ待機: UI表示/非表示トグル
+                  expLastTapTime = now;
+                  expSingleTapTimer = setTimeout(() => {
+                    toggleExploreUi();
+                  }, 280);
+                }
+              }
+            }
+          }
+        }, { passive: true });
+      }
+
+      function bindExploreDesktopEvents() {
+        window.addEventListener('keydown', (e) => {
+          if (!exploreState.active) return;
+
+          // Esc
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            if (exploreHintOverlay && exploreHintOverlay.style.display !== 'none') {
+              exploreHintOverlay.style.display = 'none';
+              localStorage.setItem('miu_explore_hint_seen', 'true');
+              return;
+            }
+            if (exploreState.tagsOpen) {
+              closeExploreTagsSheet();
+            } else {
+              switchViewMode('gallery');
+            }
+            return;
+          }
+
+          // タグ開閉
+          if (e.key === 't' || e.key === 'T') {
+            e.preventDefault();
+            if (exploreState.tagsOpen) closeExploreTagsSheet();
+            else openExploreTagsSheet();
+            return;
+          }
+
+          // Like
+          if (e.key === 'f' || e.key === 'F') {
+            e.preventDefault();
+            triggerExploreLike();
+            return;
+          }
+
+          // 左右キー (写真)
+          if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            nextExplorePhoto();
+            return;
+          }
+          if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            prevExplorePhoto();
+            return;
+          }
+
+          // 上下キー (モデル)
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            nextExploreModel();
+            return;
+          }
+          if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            prevExploreModel();
+            return;
+          }
+        });
+
+        // マウスホイール (350ms クールダウン)
+        exploreViewport?.addEventListener('wheel', (e) => {
+          if (!exploreState.active || expWheelLock || exploreState.tagsOpen) return;
+          expWheelLock = true;
+          setTimeout(() => { expWheelLock = false; }, 350);
+
+          if (e.deltaY > 0) nextExplorePhoto();
+          else if (e.deltaY < 0) prevExplorePhoto();
+        }, { passive: true });
+
+        // PC ダブルクリック (Like)
+        exploreStageArea?.addEventListener('dblclick', (e) => {
+          if (!exploreState.active) return;
+          triggerExploreLike(e);
+        });
+
+        // マウス移動でUI再表示
+        exploreViewport?.addEventListener('mousemove', () => {
+          if (!exploreState.active) return;
+          kickExploreUiTimer();
+        });
+      }
+
+      function initKeyboardShortcuts() {
+        window.addEventListener('keydown', (e) => {
+          if (modal?.open || commentModal?.open || exploreState.active) return;
+
+          if (e.key === 'Escape') {
+            const isPhotos = document.body.classList.contains('is-photos-view');
+            const isSubpage = document.body.classList.contains('is-subpage');
+            if (isPhotos) showWorksView(currentModelId);
+            else if (isSubpage) showCharactersView();
+          }
+        });
+      }
+
+      // 起動
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initApp);
+      } else {
+        initApp();
+      }
+    })();
+  </script>
+</body>
+</html>
