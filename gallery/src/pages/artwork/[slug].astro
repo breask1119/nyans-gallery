@@ -1,42 +1,38 @@
 ---
 /**
- * 作品（artwork）個別OGP対応ページ
- * SNSシェア時に各作品の安全なカバー画像をOGPとして返しつつ、
+ * 作品（Artwork）個別OGP対応ページ
+ * SNSシェア時に各作品のカバー画像をOGPとして返しつつ、
  * ユーザーがアクセスした際はトップページの当該作品へシームレスに遷移させます。
  */
 import Layout from '../../layouts/Layout.astro';
-import { getGalleryData } from '../../lib/wp';
-
-// 1. 動的ルーティングのパス生成（全artworkのスラッグを取得）
-export async function getStaticPaths() {
-  const { models } = await getGalleryData();
-  const paths: any[] = [];
-
-  if (models && models.length > 0) {
-    models.forEach((model: any) => {
-      const artworks = model.artworks?.nodes || [];
-      artworks.forEach((art: any) => {
-        if (art.slug) {
-          paths.push({
-            params: { slug: art.slug },
-            props: { art, model },
-          });
-        }
-      });
-    });
-  }
-
-  return paths;
-}
+import { getEmDashGalleryData, toAbsoluteUrl } from '../../lib/emdash-gallery';
 
 const { slug } = Astro.params;
-const { art, model } = Astro.props;
+const { models } = await getEmDashGalleryData();
 
-// OGP画像：作品のアイキャッチ、なければモデルのアバター、最悪デフォルト画像
-const ogImage = art?.featuredImage?.node?.sourceUrl || model?.modelAvatar?.node?.sourceUrl || '/assets/photo-01.png';
-const pageTitle = `${art?.title || 'Artwork'} — Miu's Gallery`;
-const pageDescription = `${model?.name || 'Miu'} の新作アルバム「${art?.title || ''}」の高画質フォトコレクション。`;
-const canonicalUrl = `https://xx-ai-girls-miu.com/artwork/${slug}`;
+// slugから該当作品と親猫を特定
+let targetArt: any = null;
+let targetCat: any = null;
+
+for (const cat of models) {
+  const found = cat.works?.find((w: any) => w.slug === slug || w.id === slug);
+  if (found) {
+    targetArt = found;
+    targetCat = cat;
+    break;
+  }
+}
+
+if (!targetArt) {
+  return Astro.redirect('/');
+}
+
+const siteBase = (import.meta.env.PUBLIC_SITE_URL || (Astro.site ? Astro.site.toString() : 'https://nyans-gallery.local')).replace(/\/$/, '');
+const rawOgImage = targetArt.coverImage || targetCat?.profileImage || '/favicon.png';
+const ogImage = toAbsoluteUrl(rawOgImage, siteBase);
+const pageTitle = `${targetArt.title} — にゃんずギャラリー`;
+const pageDescription = `${targetCat?.name || 'にゃんず'} の作品アルバム「${targetArt.title}」。`;
+const canonicalUrl = toAbsoluteUrl(`/artwork/${slug}`, siteBase);
 ---
 
 <Layout 
@@ -48,12 +44,12 @@ const canonicalUrl = `https://xx-ai-girls-miu.com/artwork/${slug}`;
   <!-- ユーザーが直接踏んだ場合はトップページの該当作品を開く、または自動リダイレクト -->
   <div class="min-h-screen flex flex-col items-center justify-center p-6 text-center bg-[#060608]">
     <div class="max-w-md w-full p-6 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-md">
-      <img src={ogImage} alt={art?.title} class="w-full h-64 object-cover rounded-xl mb-4 border border-white/10" />
-      <h1 class="text-xl font-bold text-white mb-2">{art?.title}</h1>
+      <img src={ogImage} alt={targetArt.title} class="w-full h-64 object-cover rounded-xl mb-4 border border-white/10" />
+      <h1 class="text-xl font-bold text-white mb-2">{targetArt.title}</h1>
       <p class="text-sm text-gray-400 mb-6">{pageDescription}</p>
       
       <a 
-        href={`/?model=${model?.slug || ''}&work=${slug}#view-photos`} 
+        href={`/?model=${targetCat?.slug || ''}&work=${slug}#view-photos`} 
         class="inline-block w-full py-3 px-6 rounded-full bg-rose-500 hover:bg-rose-600 text-white font-semibold transition"
       >
         ギャラリーで鑑賞する
@@ -61,7 +57,7 @@ const canonicalUrl = `https://xx-ai-girls-miu.com/artwork/${slug}`;
     </div>
   </div>
 
-  <script is:inline define:vars={{ modelSlug: model?.slug, workSlug: slug }}>
+  <script is:inline define:vars={{ modelSlug: targetCat?.slug, workSlug: slug }}>
     // 即座にトップのギャラリーへシームレス遷移（体験を損なわない）
     window.location.replace(`/?model=${modelSlug}&work=${workSlug}`);
   </script>

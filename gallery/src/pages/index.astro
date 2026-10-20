@@ -3,29 +3,16 @@
 import { ClientRouter } from 'astro:transitions';
 import '../styles/gallery.css';
 import '../styles/app.scss';
-import { getGalleryData, DEFAULT_WP_GRAPHQL_URL } from '../lib/wp';
+import { getEmDashGalleryData, toAbsoluteUrl } from '../lib/emdash-gallery';
 
-// 1. WordPress (WPGraphQL + REST API ハイブリッド) からデータ取得
-const { siteInfo, sliders, models: rawModels, latestArtwork, debugLog } = await getGalleryData();
+// 1. EmDash からにゃんずギャラリーデータ取得
+const { siteInfo, sliders, models: rawModels, latestArtwork, debugLog } = await getEmDashGalleryData();
 
-// 画像URLのHTTPS化およびWordPressオリジン正規化ヘルパー
-const wpGraphqlUrl = (import.meta.env.PUBLIC_WP_GRAPHQL_URL || DEFAULT_WP_GRAPHQL_URL || '').trim();
+// 画像URL正規化ヘルパー（EmDashのローカルメディアパスまたは外部URL）
 const secureUrl = (url: string) => {
   if (!url) return '';
-  let httpsUrl = url.replace(/^http:\/\//i, 'https://');
-  if (wpGraphqlUrl && !httpsUrl.includes('unsplash.com')) {
-    try {
-      const wpOrigin = new URL(wpGraphqlUrl).origin;
-      const urlObj = new URL(httpsUrl);
-      if (urlObj.origin !== wpOrigin) {
-        urlObj.protocol = new URL(wpOrigin).protocol;
-        urlObj.hostname = new URL(wpOrigin).hostname;
-        urlObj.port = new URL(wpOrigin).port;
-        return urlObj.toString();
-      }
-    } catch (e) {}
-  }
-  return httpsUrl;
+  if (url.startsWith('/')) return url;
+  return url.replace(/^http:\/\//i, 'https://');
 };
 
 const placeholderImg = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=1200&auto=format&fit=crop";
@@ -44,86 +31,30 @@ const hexToRgbString = (hex: string) => {
   return `${r}, ${g}, ${b}`;
 };
 
-// キャラクター名と英字の対応表（全12モデル対応、表記揺れ対応）
-const characterNameMap: Record<string, string> = {
-  "美羽": "Miu",
-  "美夜": "Miya",
-  "美姫": "Miki",
-  "美桜": "Mio",
-  "美空": "Miku",
-  "美玖": "Miku",
-  "美英": "Miei",
-  "美詠": "Miei",
-  "美香": "Mika",
-  "美華": "Mika",
-  "美緑": "Midori",
-  "美鳥": "Midori",
-  "未来": "Mirai",
-  "美莱": "Mirai",
-  "美柚": "Miyuzu",
-  "美ゆず": "Miyuzu",
-  "美登": "Mito",
-  "美豊": "Mito",
-  "雪": "Yuki",
-  "ユキ": "Yuki",
+// -------------------------------------------------------------
+// にゃんずギャラリー共通定数
+// -------------------------------------------------------------
+const DEFAULT_SITE_TITLE = "にゃんずギャラリー";
+const DEFAULT_SITE_DESCRIPTION = "我が家のにゃんずの愛らしい姿をお届けするフォトギャラリー。";
+const INSTAGRAM_ACCOUNT = "perumofu";
+const INSTAGRAM_URL = `https://www.instagram.com/${INSTAGRAM_ACCOUNT}/`;
+const SITE_URL = (import.meta.env.PUBLIC_SITE_URL || (Astro.site ? Astro.site.toString() : "https://nyans-gallery.local/")).replace(/\/$/, "");
+
+// 猫名整形ヘルパー（Cats.nameをそのまま表示）
+const formatModelDisplayName = (name: string, _slug?: string) => {
+  return name ? name.trim() : '';
 };
 
-const slugNameMap: Record<string, string> = {
-  "miu": "Miu",
-  "miya": "Miya",
-  "miki": "Miki",
-  "mio": "Mio",
-  "miku": "Miku",
-  "miei": "Miei",
-  "mika": "Mika",
-  "midori": "Midori",
-  "mirai": "Mirai",
-  "miyuzu": "Miyuzu",
-  "mito": "Mito",
-  "yuki": "Yuki",
-};
-
-// モデル名を「漢字 / アルファベット (例: 美羽 / Miu)」に整形するヘルパー
-const formatModelDisplayName = (name: string, slug?: string) => {
-  if (!name) return '';
-  const clean = name.trim();
-  if (clean.includes('/')) return clean;
-
-  if (characterNameMap[clean]) {
-    return `${clean} / ${characterNameMap[clean]}`;
-  }
-
-  if (slug) {
-    const en = slug.charAt(0).toUpperCase() + slug.slice(1).toLowerCase();
-    if (!clean.toLowerCase().includes(slug.toLowerCase())) {
-      return `${clean} / ${en}`;
-    }
-  }
-
-  return clean;
-};
-
-// タイトルHTML（漢字とアルファベットを別々のspanにして細身の洗練されたタイポグラフィを適用）
+// タイトルHTML（洗練されたタイポグラフィクラスを適用）
 const formatTitleHtml = (displayName: string) => {
   if (!displayName) return '';
-  if (displayName.includes(' / ')) {
-    const [kanji, romaji] = displayName.split(' / ');
-    return `<span class="char-kanji">${kanji}</span><span class="char-divider">/</span><span class="char-romaji">${romaji}</span>`;
-  }
   return `<span class="char-kanji">${displayName}</span>`;
 };
 
-// キャラクター英名取得ヘルパー（バッジ表示用）
+// バッジ用ラベル取得ヘルパー
 const getRomajiName = (name: string, slug?: string) => {
-  if (!name) return 'Miu';
-  if (name.includes(' / ')) return name.split(' / ')[1].trim();
-  const clean = name.trim();
-  if (characterNameMap[clean]) return characterNameMap[clean];
-  const lower = clean.toLowerCase();
-  if (slugNameMap[lower]) return slugNameMap[lower];
-  if (slug && slugNameMap[slug.toLowerCase()]) return slugNameMap[slug.toLowerCase()];
-  if (slug && slug !== 'featured') return slug.charAt(0).toUpperCase() + slug.slice(1).toLowerCase();
-  return clean.charAt(0).toUpperCase() + clean.slice(1);
+  if (slug) return slug.toUpperCase();
+  return name ? name.trim() : '';
 };
 
 // WordPressのデータを home-version の 3-Tier UI 用データ構造へ統合変換
@@ -141,7 +72,7 @@ const formattedGalleryData = (rawModels && rawModels.length > 0)
         const workId = art.slug || art.id || `${modelId}-work-${artIdx + 1}`;
         const dbId = art.databaseId || 0;
 
-        // wp.ts 内で正規化済みの normalizedImages を優先使用
+        // normalizedImages を優先使用
         let photos: any[] = [];
         if (art.normalizedImages && Array.isArray(art.normalizedImages)) {
           photos = art.normalizedImages.map((img: any, pIdx: number) => ({
@@ -151,9 +82,7 @@ const formattedGalleryData = (rawModels && rawModels.length > 0)
             workTitle: art.title,
             modelName: displayName,
             characterId: modelId,
-            contentRating: img.contentRating || 'safe',
             sortOrder: img.sortOrder,
-            distribution: img.distribution,
           }));
         } else {
           // 旧方式フォールバック
@@ -168,9 +97,7 @@ const formattedGalleryData = (rawModels && rawModels.length > 0)
             workTitle: art.title,
             modelName: displayName,
             characterId: modelId,
-            contentRating: 'safe',
             sortOrder: pIdx + 1,
-            distribution: { instagram: true, threads: true, x: true, patreon: 'public' },
           }));
         }
 
@@ -184,9 +111,7 @@ const formattedGalleryData = (rawModels && rawModels.length > 0)
             workTitle: art.title,
             modelName: displayName,
             characterId: modelId,
-            contentRating: 'safe',
             sortOrder: 1,
-            distribution: { instagram: true, threads: true, x: true, patreon: 'public' },
           }];
         }
 
@@ -232,13 +157,13 @@ let latestSlideItem: any = null;
 if (latestArtwork) {
   const modelNode = latestArtwork.models?.nodes?.[0];
   const matchedModel = rawModels?.find((m: any) =>
-    m.name === modelNode?.name || m.slug === modelNode?.slug
+    m.name === modelNode?.name || m.slug === modelNode?.slug || m.slug === latestArtwork.catSlug
   ) || rawModels?.[0];
 
-  const mName = matchedModel?.name || modelNode?.name || "美羽";
-  const mSlug = matchedModel?.slug || modelNode?.slug || "miu";
+  const mName = matchedModel?.name || modelNode?.name || "にゃんず";
+  const mSlug = matchedModel?.slug || modelNode?.slug || latestArtwork.catSlug || "cat";
   const mColor = getValidColor(matchedModel?.memberColor || modelNode?.memberColor);
-  const featImg = secureUrl(latestArtwork.featuredImage?.node?.sourceUrl) || placeholderImg;
+  const featImg = secureUrl(latestArtwork.coverImage || latestArtwork.featuredImage?.node?.sourceUrl) || placeholderImg;
 
   latestSlideItem = {
     id: `slider-latest-${latestArtwork.databaseId || latestArtwork.id || 'new'}`,
@@ -277,7 +202,7 @@ const baseSliders = (sliders && sliders.length > 0)
       const matchedModel = rawModels?.find((m: any) => m.name === s.title || m.slug === s.title);
       const displayName = matchedModel
         ? formatModelDisplayName(matchedModel.name, matchedModel.slug)
-        : (s.title ? formatModelDisplayName(s.title) : "美羽 / Miu");
+        : (s.title ? formatModelDisplayName(s.title) : "にゃんず");
       return {
         id: `slider-${idx}`,
         title: s.title || 'Featured',
@@ -341,10 +266,11 @@ const decodeHtmlEntities = (str: string) => {
     .replace(/&#8216;/g, '‘');
 };
 
-const siteTitle = decodeHtmlEntities(siteInfo?.title) || "Miu's Gallery — Fine Photography & Character Archive";
-const siteDescription = decodeHtmlEntities(siteInfo?.description) || "枠にとらわれないダイナミックな写真レイアウトと、各キャラクター作品へのシームレスなアクセス性を追求した次世代フォトギャラリー。";
-const siteUrl = Astro.site ? Astro.site.toString() : "https://xx-ai-girls-miu.com/";
-const ogImageUrl = heroSliderList[0]?.image || placeholderImg;
+const siteTitle = decodeHtmlEntities(siteInfo?.title) || DEFAULT_SITE_TITLE;
+const siteDescription = decodeHtmlEntities(siteInfo?.description) || DEFAULT_SITE_DESCRIPTION;
+const siteUrl = SITE_URL;
+const rawOgImage = heroSliderList[0]?.image || placeholderImg;
+const ogImageUrl = toAbsoluteUrl(rawOgImage, siteUrl);
 
 const schemaLD = {
   "@context": "https://schema.org",
@@ -355,7 +281,7 @@ const schemaLD = {
   "image": ogImageUrl,
   "author": {
     "@type": "Person",
-    "name": "Miu"
+    "name": DEFAULT_SITE_TITLE
   }
 };
 
@@ -389,14 +315,13 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
   <meta name="twitter:description" content={siteDescription}>
   <meta name="twitter:image" content={ogImageUrl}>
 
-  <!-- PWA & Favicon -->
+  <!-- Favicon & Mobile Icons -->
   <link rel="icon" type="image/png" href="/favicon.png">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-  <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#060608">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Miu's Gallery">
+  <meta name="apple-mobile-web-app-title" content="にゃんずギャラリー">
 
   <!-- Fonts (Zen Kaku Gothic New + Outfit + Cinzel + Plus Jakarta Sans) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -411,71 +336,8 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
 
   <ClientRouter />
 
-  <!-- PWA Service Worker Registration -->
-  <script>
-    import { registerSW } from 'virtual:pwa-register';
-    if ('serviceWorker' in navigator) {
-      registerSW({
-        immediate: true
-        // 閲覧中の突然の強制リロードによるポップアップ消失を防ぐため、即時リロードは行わない
-      });
-    }
-  </script>
-
-  <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
-  <script is:inline>
-    window.OneSignalDeferred = window.OneSignalDeferred || [];
-    OneSignalDeferred.push(async function(OneSignal) {
-      if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-        return;
-      }
-      await OneSignal.init({
-        appId: "06418ce1-102a-4a7b-a88b-069b594cf919",
-        serviceWorkerPath: "push/onesignal/OneSignalSDKWorker.js",
-        serviceWorkerParam: {
-          scope: "/push/onesignal/"
-        },
-        promptOptions: {
-          slidedown: {
-            prompts: [
-              {
-                type: "push",
-                autoPrompt: true,
-                text: {
-                  actionMessage: "新しいギャラリーが追加されたら通知を受け取りますか？",
-                  acceptButton: "受け取る",
-                  cancelButton: "あとで",
-                },
-                delay: {
-                  pageViews: 1,
-                  timeDelay: 5 
-                }
-              }
-            ]
-          }
-        }
-      });
-    });
-  </script>
-
   <!-- Schema.org JSON-LD -->
   <script type="application/ld+json" set:html={JSON.stringify(schemaLD)} />
-
-  <script define:vars={{ wpGraphqlUrl }}>
-    window.WP_GRAPHQL_URL = wpGraphqlUrl;
-  </script>
-
-  <!-- Immediate beforeinstallprompt capture -->
-  <script is:inline>
-    window.__deferredPwaPrompt = null;
-    window.addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault();
-      window.__deferredPwaPrompt = e;
-      if (typeof window.__triggerPwaPrompt === 'function') {
-        window.__triggerPwaPrompt();
-      }
-    });
-  </script>
 
   <style is:inline define:vars={{ initialColor, initialRgb, initialContrastText, initialBorderLight }}>
     :root {
@@ -503,9 +365,9 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
   <!-- Floating Top Bar: Logo, Social Links & About Button -->
   <div class="floating-top-bar" id="floating-top-bar">
     <div class="floating-brand-group">
-      <a href="#" class="floating-brand-logo" id="brand-home-link" aria-label="Miu's Gallery Home">
-        <span class="brand-sym">✦</span>
-        <span class="brand-text">Miu's <span class="brand-sub">Gallery</span></span>
+      <a href="#" class="floating-brand-logo" id="brand-home-link" aria-label="にゃんずギャラリー Home">
+        <span class="brand-sym">🐾</span>
+        <span class="brand-text">Nyans <span class="brand-sub">Gallery</span></span>
       </a>
 
       <!-- View Mode Switcher (ギャラリー / 無限モード) -->
@@ -515,26 +377,12 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
       </div>
 
       <div class="floating-social-links">
-        <!-- X (Twitter) -->
-        <a href="https://x.com/xx_ai_girls_miu" target="_blank" rel="noopener noreferrer" class="social-icon-btn x-btn" aria-label="X (Twitter)">
-          <svg class="social-svg-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-          </svg>
-        </a>
-
         <!-- Instagram -->
-        <a href="https://www.instagram.com/xx.ai.girls.miu0402/" target="_blank" rel="noopener noreferrer" class="social-icon-btn instagram-btn" aria-label="Instagram">
+        <a href={INSTAGRAM_URL} target="_blank" rel="noopener noreferrer" class="social-icon-btn instagram-btn" aria-label={`Instagram (@${INSTAGRAM_ACCOUNT})`}>
           <svg class="social-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect>
             <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path>
             <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line>
-          </svg>
-        </a>
-
-        <!-- Patreon -->
-        <a href="https://www.patreon.com/cw/u73055670?utm_medium=unknown&utm_source=join_link&utm_campaign=creatorshare_creator&utm_content=copyLink" target="_blank" rel="noopener noreferrer" class="social-icon-btn patreon-btn" aria-label="Patreon">
-          <svg class="social-svg-icon patreon-new-logo" viewBox="0 0 1080 1080" fill="currentColor" aria-hidden="true">
-            <path d="M1033.05,324.45c-0.19-137.9-107.59-250.92-233.6-291.7c-156.48-50.64-362.86-43.3-512.28,27.2 C106.07,145.41,49.18,332.61,47.06,519.31c-1.74,153.5,13.58,557.79,241.62,560.67c169.44,2.15,194.67-216.18,273.07-321.33 c55.78-74.81,127.6-95.94,216.01-117.82C929.71,603.22,1033.27,483.3,1033.05,324.45z"></path>
           </svg>
         </a>
 
@@ -544,16 +392,6 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
             <circle cx="12" cy="12" r="10"></circle>
             <line x1="12" y1="16" x2="12" y2="12"></line>
             <line x1="12" y1="8" x2="12.01" y2="8"></line>
-          </svg>
-        </button>
-
-        <!-- PWA Install / Home Button -->
-        <button id="header-pwa-btn" class="social-icon-btn pwa-header-install-btn" aria-label="アプリとしてホーム画面に追加" title="ホーム画面に追加">
-          <svg class="social-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
-            <line x1="12" y1="18" x2="12.01" y2="18"></line>
-            <polyline points="9 9 12 12 15 9"></polyline>
-            <line x1="12" y1="6" x2="12" y2="12"></line>
           </svg>
         </button>
       </div>
@@ -596,7 +434,7 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
           <h1 class="stage-badge-text" id="stage-badge-name">
             {heroSliderList[0]?.isLatestPost
               ? `NEW: ${heroSliderList[0]?.title}`
-              : getRomajiName(heroSliderList[0]?.modelName || "美羽 / Miu", heroSliderList[0]?.characterId)}
+              : getRomajiName(heroSliderList[0]?.modelName || "にゃんず", heroSliderList[0]?.characterId)}
           </h1>
         </div>
       </div>
@@ -718,19 +556,7 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
           <!-- Injected dynamically by JS -->
         </div>
 
-        <!-- Patreon Banner in Detail View -->
-        <a href="https://www.patreon.com/cw/u73055670?utm_medium=unknown&utm_source=join_link&utm_campaign=creatorshare_creator&utm_content=copyLink" target="_blank" rel="noopener noreferrer" class="patreon-detail-banner" aria-label="Patreonで限定作品を見る">
-          <div class="flex items-center gap-2.5">
-            <svg class="w-5 h-5 text-[#ff424d] fill-current shrink-0" viewBox="0 0 1080 1080">
-              <path d="M1033.05,324.45c-0.19-137.9-107.59-250.92-233.6-291.7c-156.48-50.64-362.86-43.3-512.28,27.2 C106.07,145.41,49.18,332.61,47.06,519.31c-1.74,153.5,13.58,557.79,241.62,560.67c169.44,2.15,194.67-216.18,273.07-321.33 c55.78-74.81,127.6-95.94,216.01-117.82C929.71,603.22,1033.27,483.3,1033.05,324.45z"></path>
-            </svg>
-            <div>
-              <div class="text-white text-xs font-medium">Patreon Exclusive Collection</div>
-              <div class="text-gray-400 text-[10px]">高解像度・未公開カットをPatreonで公開中</div>
-            </div>
-          </div>
-          <span class="text-[#ff424d] text-xs font-semibold shrink-0">JOIN →</span>
-        </a>
+
 
       </div>
 
@@ -771,7 +597,7 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
       <header class="explore-header">
         <div class="explore-model-meta" id="explore-model-meta">
           <span class="explore-model-chip" id="explore-model-chip"></span>
-          <span class="explore-model-name" id="explore-model-name">美羽 / Miu</span>
+          <span class="explore-model-name" id="explore-model-name">にゃんず</span>
         </div>
 
         <div class="explore-actions">
@@ -810,7 +636,7 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
           <div class="explore-index-pill" id="explore-index-pill">01 / 12</div>
         </div>
         <div class="explore-model-nav-hint">
-          <span>↕ モデル切替</span>
+          <span>↕ ねこ切替</span>
         </div>
       </footer>
     </div>
@@ -822,7 +648,7 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
         <div class="explore-sheet-drag-handle"></div>
         <div class="explore-sheet-header">
           <div>
-            <div class="explore-sheet-model" id="sheet-model-name">美羽 / Miu</div>
+            <div class="explore-sheet-model" id="sheet-model-name">にゃんず</div>
             <h3 class="explore-sheet-work" id="sheet-work-title">Work Title</h3>
           </div>
           <button class="explore-sheet-close" id="sheet-close-btn" aria-label="閉じる">✕</button>
@@ -969,24 +795,24 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
   </dialog>
 
   <!-- ABOUT / INFO MODAL -->
-  <dialog id="info-modal" class="info-drawer-modal" aria-modal="true" aria-label="Miu's Gallery について">
+  <dialog id="info-modal" class="info-drawer-modal" aria-modal="true" aria-label="にゃんずギャラリー について">
     <div class="info-drawer-inner">
       <div class="drawer-header">
-        <h2 class="drawer-title">ABOUT MIU'S GALLERY</h2>
+        <h2 class="drawer-title">ABOUT NYANS GALLERY</h2>
         <button id="info-close-btn" class="modal-btn" aria-label="閉じる">
           <i data-lucide="x" class="w-5 h-5"></i>
         </button>
       </div>
       <div class="drawer-body">
         <p class="lead-statement">
-          「各キャラクターの作品世界」と「写真集をめくるようなシームレスな探索」。
+          「我が家のにゃんずたちの愛らしい作品世界」と「写真集をめくるようなシームレスな探索」。
         </p>
         <p>
-          Miu's Gallery は、各モデルが紡ぎ出す複数の作品（Works）と、それぞれの作品に収められた複数枚の高精細写真（Photos）を、1画面内でスムーズに鑑賞できるフォトアーカイブです。
+          にゃんずギャラリーは、各にゃんこが紡ぎ出す複数の作品（Works）と、それぞれの作品に収められた複数枚の高精細写真（Photos）を、1画面内でスムーズに鑑賞できるフォトアーカイブです。
         </p>
         <h3 style="margin-top: 1.25rem; font-size: 0.95rem; font-weight: 700; color: #fff;">HOW TO EXPLORE</h3>
         <ul class="guide-list">
-          <li><strong>モデル選択:</strong> モデル一覧から気になるモデルをタップすると、そのモデルの作品集（Works）が展開。</li>
+          <li><strong>ねこ選択:</strong> ねこ一覧から気になるねこをタップすると、そのねこの作品集（Works）が展開。</li>
           <li><strong>作品選択:</strong> 作品を選ぶと、収録写真のサムネイル一覧が表示され、大画面で鑑賞できます。</li>
           <li><strong>写真送り:</strong> 左右矢印ボタンや、スマホの画面スワイプで同じ作品内の写真を連続してめくれます。</li>
           <li><strong>全画面拡大:</strong> メイン写真をタップすると、高精細ズームモーダルが起動。</li>
@@ -996,84 +822,21 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
         <!-- Official Social Links -->
         <div class="mt-6 pt-5 border-t border-white/10">
           <h4 style="font-size: 0.75rem; font-weight: 600; color: #94a3b8; letter-spacing: 0.08em; margin-bottom: 0.75rem; text-transform: uppercase;">Official Links</h4>
-          <div class="grid grid-cols-3 gap-2">
-            <!-- X (Twitter) -->
-            <a href="https://x.com/xx_ai_girls_miu" target="_blank" rel="noopener noreferrer" class="flex flex-col items-center justify-center p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition group text-center">
-              <svg class="w-4 h-4 text-white mb-1 group-hover:scale-110 transition-transform" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
-              </svg>
-              <span class="text-[10px] text-gray-300 font-medium">X</span>
-            </a>
+          <div class="grid grid-cols-1 gap-2">
             <!-- Instagram -->
-            <a href="https://www.instagram.com/xx.ai.girls.miu0402/" target="_blank" rel="noopener noreferrer" class="flex flex-col items-center justify-center p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition group text-center">
-              <svg class="w-4 h-4 text-pink-400 mb-1 group-hover:scale-110 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <a href={INSTAGRAM_URL} target="_blank" rel="noopener noreferrer" class="flex items-center justify-center gap-2 p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition group text-center">
+              <svg class="w-4 h-4 text-pink-400 group-hover:scale-110 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect>
                 <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path>
                 <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line>
               </svg>
-              <span class="text-[10px] text-gray-300 font-medium">Instagram</span>
-            </a>
-            <!-- Patreon -->
-            <a href="https://www.patreon.com/cw/u73055670?utm_medium=unknown&utm_source=join_link&utm_campaign=creatorshare_creator&utm_content=copyLink" target="_blank" rel="noopener noreferrer" class="flex flex-col items-center justify-center p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition group text-center">
-              <svg class="w-4 h-4 text-rose-400 mb-1 group-hover:scale-110 transition-transform" viewBox="0 0 1080 1080" fill="currentColor">
-                <path d="M1033.05,324.45c-0.19-137.9-107.59-250.92-233.6-291.7c-156.48-50.64-362.86-43.3-512.28,27.2 C106.07,145.41,49.18,332.61,47.06,519.31c-1.74,153.5,13.58,557.79,241.62,560.67c169.44,2.15,194.67-216.18,273.07-321.33 c55.78-74.81,127.6-95.94,216.01-117.82C929.71,603.22,1033.27,483.3,1033.05,324.45z"></path>
-              </svg>
-              <span class="text-[10px] text-gray-300 font-medium">Patreon</span>
+              <span class="text-xs text-gray-300 font-medium">Instagram (@{INSTAGRAM_ACCOUNT})</span>
             </a>
           </div>
-        </div>
-
-        <!-- PWA Manual Trigger in About Modal -->
-        <div class="mt-4 pt-4 border-t border-white/10 flex flex-col gap-2">
-          <button id="about-pwa-btn" type="button" class="w-full flex items-center justify-center gap-2.5 py-3 px-4 rounded-xl bg-gradient-to-r from-rose-500/20 to-pink-500/20 hover:from-rose-500/30 hover:to-pink-500/30 border border-rose-500/30 text-rose-300 hover:text-white font-medium text-xs transition-all">
-            <svg class="w-4 h-4 text-rose-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
-              <line x1="12" y1="18" x2="12.01" y2="18"></line>
-              <polyline points="9 9 12 12 15 9"></polyline>
-              <line x1="12" y1="6" x2="12" y2="12"></line>
-            </svg>
-            <span>ホーム画面にアプリを追加する</span>
-          </button>
         </div>
       </div>
     </div>
   </dialog>
-
-  <!-- PWA INSTALL PROMPT (Mobile & iOS & Desktop) -->
-  <div id="pwa-install-prompt" role="alert" aria-live="polite">
-    <div class="flex items-start justify-between gap-3">
-      <div class="flex items-center gap-3">
-        <div class="w-10 h-10 rounded-xl overflow-hidden shrink-0 border border-[#F43F5E]/50 bg-black shadow-md">
-          <img src="/pwa-192x192.png" alt="App Icon" class="w-full h-full object-cover" />
-        </div>
-        <div>
-          <h3 class="text-white text-sm font-semibold tracking-wide">アプリとして追加</h3>
-          <p class="text-gray-300 text-xs mt-0.5 leading-snug">ホーム画面に追加してフルスクリーンでお楽しみください</p>
-        </div>
-      </div>
-      <button id="pwa-close-btn" class="text-gray-400 hover:text-white transition-colors p-1.5 shrink-0 -mt-1 -mr-1 rounded-lg hover:bg-white/10" aria-label="閉じる">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-      </button>
-    </div>
-
-    <!-- iOS手順案内 -->
-    <div id="pwa-ios-instructions" class="hidden text-xs text-gray-200 bg-white/10 rounded-xl p-3 border border-white/10 shadow-inner">
-      <ol class="list-decimal list-inside space-y-1.5 ml-1">
-        <li>Safari下部の <svg class="w-4 h-4 inline-block align-text-bottom mx-0.5 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg> 共有ボタンをタップ</li>
-        <li>メニュー内の「<span class="font-bold text-white underline decoration-rose-400 underline-offset-2">ホーム画面に追加</span>」をタップ</li>
-      </ol>
-    </div>
-
-    <!-- Android / ブラウザ手動追加案内（beforeinstallprompt非対応時） -->
-    <div id="pwa-manual-instructions" class="hidden text-xs text-gray-200 bg-white/10 rounded-xl p-3 border border-white/10 shadow-inner">
-      <p class="leading-relaxed">ブラウザ右上のメニュー「<strong class="text-white">︙</strong>」から「<strong class="text-white underline decoration-rose-400 underline-offset-2">アプリをインストール</strong>」または「<strong class="text-white underline decoration-rose-400 underline-offset-2">ホーム画面に追加</strong>」を選択してください。</p>
-    </div>
-
-    <!-- ワンタップインストールボタン（beforeinstallprompt検知時） -->
-    <button id="pwa-install-btn" class="hidden w-full bg-[#F43F5E] hover:bg-[#E11D48] active:scale-[0.98] text-white text-sm font-semibold py-2.5 rounded-xl transition-all shadow-[0_4px_16px_rgba(244,63,94,0.4)]">
-      インストールする
-    </button>
-  </div>
 
   <!-- クライアント用データペイロード (JSON) -->
   <script id="app-gallery-data" type="application/json" set:html={JSON.stringify({
@@ -1143,186 +906,12 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
 
       function formatTitleHtml(displayName) {
         if (!displayName) return '';
-        if (displayName.includes(' / ')) {
-          const parts = displayName.split(' / ');
-          return `<span class="char-kanji">${parts[0]}</span><span class="char-divider">/</span><span class="char-romaji">${parts[1]}</span>`;
-        }
         return `<span class="char-kanji">${displayName}</span>`;
       }
 
-      const clientCharNameMap = {
-        "美羽": "Miu",
-        "美夜": "Miya",
-        "美姫": "Miki",
-        "美桜": "Mio",
-        "美空": "Miku",
-        "美玖": "Miku",
-        "美英": "Miei",
-        "美詠": "Miei",
-        "美香": "Mika",
-        "美華": "Mika",
-        "美緑": "Midori",
-        "美鳥": "Midori",
-        "未来": "Mirai",
-        "美莱": "Mirai",
-        "美柚": "Miyuzu",
-        "美ゆず": "Miyuzu",
-        "美登": "Mito",
-        "美豊": "Mito",
-        "雪": "Yuki",
-        "ユキ": "Yuki"
-      };
-
-      const clientSlugNameMap = {
-        "miu": "Miu",
-        "miya": "Miya",
-        "miki": "Miki",
-        "mio": "Mio",
-        "miku": "Miku",
-        "miei": "Miei",
-        "mika": "Mika",
-        "midori": "Midori",
-        "mirai": "Mirai",
-        "miyuzu": "Miyuzu",
-        "mito": "Mito",
-        "yuki": "Yuki"
-      };
-
       function getRomajiName(displayName, slug) {
-        if (!displayName) return 'Miu';
-        if (displayName.includes(' / ')) {
-          return displayName.split(' / ')[1].trim();
-        }
-        const clean = displayName.trim();
-        if (clientCharNameMap[clean]) {
-          return clientCharNameMap[clean];
-        }
-        const lower = clean.toLowerCase();
-        if (clientSlugNameMap[lower]) {
-          return clientSlugNameMap[lower];
-        }
-        if (slug && clientSlugNameMap[slug.toLowerCase()]) {
-          return clientSlugNameMap[slug.toLowerCase()];
-        }
-        if (slug && slug !== 'featured') {
-          return slug.charAt(0).toUpperCase() + slug.slice(1).toLowerCase();
-        }
-        return clean.charAt(0).toUpperCase() + clean.slice(1);
-      }
-
-      // ============================================================
-      // PWA INSTALL PROMPT (Mobile & iOS & Desktop)
-      // ============================================================
-      function initPwaPrompt() {
-        const promptEl = document.getElementById('pwa-install-prompt');
-        if (!promptEl) return;
-
-        const isStandalone = window.matchMedia('(display-mode: standalone)').matches || (window.navigator && window.navigator.standalone);
-        const urlParams = new URLSearchParams(window.location.search);
-        const forcePwa = urlParams.has('pwa');
-
-        const headerBtn = document.getElementById('header-pwa-btn');
-        const aboutInstallBtn = document.getElementById('about-pwa-btn');
-
-        // すでにネイティブアプリとしてインストール・起動中の場合はボタン類を非表示
-        if (isStandalone) {
-          if (headerBtn) headerBtn.style.display = 'none';
-          if (aboutInstallBtn) aboutInstallBtn.style.display = 'none';
-          return;
-        }
-
-        const DISMISS_KEY = 'miu_pwa_dismiss_until';
-        // 過去の永久非表示キーを削除してリセット
-        localStorage.removeItem('miu_pwa_prompt_closed');
-
-        const dismissUntil = parseInt(localStorage.getItem(DISMISS_KEY) || '0', 10);
-        const isDismissed = !forcePwa && (Date.now() < dismissUntil);
-
-        const iosInstructions = document.getElementById('pwa-ios-instructions');
-        const manualInstructions = document.getElementById('pwa-manual-instructions');
-        const installBtn = document.getElementById('pwa-install-btn');
-        const closeBtn = document.getElementById('pwa-close-btn');
-
-        const userAgent = window.navigator.userAgent.toLowerCase();
-        const isIOS = /iphone|ipad|ipod/.test(userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
-        const showPrompt = (isManual = false) => {
-          if (!isManual && isDismissed) {
-            return;
-          }
-
-          const prompt = window.__deferredPwaPrompt;
-          if (prompt) {
-            // Android Chrome等でbeforeinstallpromptが取れた場合（ワンタップボタン）
-            if (installBtn) installBtn.classList.remove('hidden');
-            if (manualInstructions) manualInstructions.classList.add('hidden');
-            if (iosInstructions) iosInstructions.classList.add('hidden');
-          } else if (isIOS) {
-            // iPhone / iPad（Safari共有ボタン案内）
-            if (iosInstructions) iosInstructions.classList.remove('hidden');
-            if (manualInstructions) manualInstructions.classList.add('hidden');
-            if (installBtn) installBtn.classList.add('hidden');
-          } else {
-            // その他（手動メニュー追加案内）
-            if (manualInstructions) manualInstructions.classList.remove('hidden');
-            if (iosInstructions) iosInstructions.classList.add('hidden');
-            if (installBtn) installBtn.classList.add('hidden');
-          }
-
-          promptEl.classList.add('is-visible');
-        };
-
-        const hidePrompt = (persistDismiss = true) => {
-          promptEl.classList.remove('is-visible');
-          if (persistDismiss) {
-            // 閉じた場合は12時間自動ポップアップを抑制
-            localStorage.setItem(DISMISS_KEY, (Date.now() + 12 * 60 * 60 * 1000).toString());
-          }
-        };
-
-        window.__triggerPwaPrompt = (manual = false) => showPrompt(manual);
-
-        // ヘッダーボタン・Aboutモーダル内のボタンから手動表示
-        headerBtn?.addEventListener('click', (e) => {
-          e.preventDefault();
-          showPrompt(true);
-        });
-
-        aboutInstallBtn?.addEventListener('click', (e) => {
-          e.preventDefault();
-          const infoModal = document.getElementById('info-modal');
-          if (infoModal && typeof infoModal.close === 'function') {
-            infoModal.close();
-          }
-          showPrompt(true);
-        });
-
-        // 自動表示（未閉鎖時または?pwa指定時）
-        if (!isDismissed || forcePwa) {
-          if (window.__deferredPwaPrompt) {
-            setTimeout(() => showPrompt(false), 1200);
-          } else {
-            setTimeout(() => showPrompt(false), 1800);
-          }
-        }
-
-        closeBtn?.addEventListener('click', (e) => {
-          e.stopPropagation();
-          hidePrompt(true);
-        });
-
-        installBtn?.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          const prompt = window.__deferredPwaPrompt;
-          if (prompt) {
-            prompt.prompt();
-            const { outcome } = await prompt.userChoice;
-            if (outcome === 'accepted') {
-              hidePrompt(true);
-            }
-            window.__deferredPwaPrompt = null;
-          }
-        });
+        if (slug) return slug.toUpperCase();
+        return displayName ? displayName.trim() : '';
       }
 
       // ============================================================
@@ -1360,7 +949,6 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
         initKeyboardShortcuts();
         initAboutModal();
         initLikesAndComments();
-        initPwaPrompt();
         initExploreMode();
         initScrollHeader();
 
@@ -1963,12 +1551,12 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
 
       function showSwipeHintFirstTime() {
         if (!swipeHintEl) return;
-        const seen = localStorage.getItem('miu_swipe_hint_seen');
+        const seen = localStorage.getItem('nyans_swipe_hint_seen') || localStorage.getItem('miu_swipe_hint_seen');
         if (!seen && window.innerWidth <= 960) {
           swipeHintEl.style.display = 'block';
           swipeHintTimeout = setTimeout(() => {
             swipeHintEl.style.display = 'none';
-            localStorage.setItem('miu_swipe_hint_seen', 'true');
+            localStorage.setItem('nyans_swipe_hint_seen', 'true');
           }, 3500);
         }
       }
@@ -2082,59 +1670,64 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
       }
 
       // ============================================================
-      // LIKES & COMMENTS FUNCTIONALITY
+      // LIKES FUNCTIONALITY (localStorage完結 & トグルON/OFF対応)
       // ============================================================
-      function isPostLiked(dbId) {
-        if (!dbId) return false;
-        const liked = JSON.parse(localStorage.getItem('miu_liked_posts') || '[]');
-        return liked.includes(dbId.toString());
+      function isPostLiked(id) {
+        if (!id) return false;
+        const liked = JSON.parse(localStorage.getItem('nyans_liked_posts') || localStorage.getItem('miu_liked_posts') || '[]');
+        return liked.includes(id.toString());
       }
 
-      function markPostAsLiked(dbId) {
-        if (!dbId) return;
-        const liked = JSON.parse(localStorage.getItem('miu_liked_posts') || '[]');
-        if (!liked.includes(dbId.toString())) {
-          liked.push(dbId.toString());
-          localStorage.setItem('miu_liked_posts', JSON.stringify(liked));
+      function togglePostLike(id) {
+        if (!id) return false;
+        const liked = JSON.parse(localStorage.getItem('nyans_liked_posts') || localStorage.getItem('miu_liked_posts') || '[]');
+        const idStr = id.toString();
+        const idx = liked.indexOf(idStr);
+        let nowLiked = false;
+        if (idx > -1) {
+          // 解除 (OFF)
+          liked.splice(idx, 1);
+          nowLiked = false;
+        } else {
+          // お気に入り (ON)
+          liked.push(idStr);
+          nowLiked = true;
         }
+        localStorage.setItem('nyans_liked_posts', JSON.stringify(liked));
+        return nowLiked;
       }
 
       function triggerLikeAnimation(e) {
-        if (!currentWork || !currentWork.databaseId) return;
-        const dbId = currentWork.databaseId;
-        if (isPostLiked(dbId)) return;
+        if (!currentWork) return;
+        const targetId = currentWork.slug || currentWork.id || currentWork.databaseId;
+        if (!targetId) return;
 
-        markPostAsLiked(dbId);
-        currentWork.likeCount++;
-        updateWorkStatsUI();
-
-        // Heart burst animation
-        const heart = document.createElement('div');
-        heart.className = 'fixed pointer-events-none z-[99999] transform -translate-x-1/2 -translate-y-1/2 animate-heart-burst';
-        heart.innerHTML = `<svg viewBox="0 0 24 24" class="w-28 h-28 fill-current text-rose-500 drop-shadow-[0_0_30px_rgba(244,63,94,0.8)]"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`;
-        heart.style.left = (e?.clientX || window.innerWidth / 2) + 'px';
-        heart.style.top = (e?.clientY || window.innerHeight / 2) + 'px';
-        document.body.appendChild(heart);
-        setTimeout(() => heart.remove(), 1000);
-
-        if (window.WP_GRAPHQL_URL) {
-          fetch(window.WP_GRAPHQL_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              query: `mutation IncrementLike($postId: Int!) { incrementLike(input: {postId: $postId}) { newCount } }`,
-              variables: { postId: parseInt(dbId) }
-            })
-          }).catch(err => console.error('Like request failed', err));
+        const isNowLiked = togglePostLike(targetId);
+        if (isNowLiked) {
+          currentWork.likeCount = (currentWork.likeCount || 0) + 1;
+          // ハートバーストアニメーション演出 (ON時のみ)
+          const heart = document.createElement('div');
+          heart.className = 'fixed pointer-events-none z-[99999] transform -translate-x-1/2 -translate-y-1/2 animate-heart-burst';
+          heart.innerHTML = `<svg viewBox="0 0 24 24" class="w-28 h-28 fill-current text-rose-500 drop-shadow-[0_0_30px_rgba(244,63,94,0.8)]"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`;
+          heart.style.left = (e?.clientX || window.innerWidth / 2) + 'px';
+          heart.style.top = (e?.clientY || window.innerHeight / 2) + 'px';
+          document.body.appendChild(heart);
+          setTimeout(() => heart.remove(), 1000);
+        } else {
+          // 解除 (OFF)
+          currentWork.likeCount = Math.max(0, (currentWork.likeCount || 0) - 1);
         }
+
+        updateWorkStatsUI();
       }
 
       function updateWorkStatsUI() {
         if (!currentWork) return;
+        const targetId = currentWork.slug || currentWork.id || currentWork.databaseId;
         const likeCountEl = document.getElementById('work-like-count');
         const commentCountEl = document.getElementById('work-comment-count');
         const workLikeBtn = document.getElementById('work-like-btn');
-        const isLiked = isPostLiked(currentWork.databaseId);
+        const isLiked = isPostLiked(targetId);
 
         if (likeCountEl) likeCountEl.textContent = (currentWork.likeCount || 0).toLocaleString();
         if (commentCountEl) commentCountEl.textContent = (currentWork.guestComments?.length || 0).toString();
@@ -2148,7 +1741,8 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
       function updateModalLikeButton() {
         const modalLikeBtn = document.getElementById('modal-like-btn');
         if (!modalLikeBtn || !currentWork) return;
-        const isLiked = isPostLiked(currentWork.databaseId);
+        const targetId = currentWork.slug || currentWork.id || currentWork.databaseId;
+        const isLiked = isPostLiked(targetId);
         if (isLiked) {
           modalLikeBtn.classList.add('text-rose-500', 'fill-current');
           modalLikeBtn.style.color = 'var(--char-accent)';
@@ -2158,27 +1752,9 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
         }
       }
 
-      function fetchLiveStats(postId) {
-        if (!window.WP_GRAPHQL_URL || !postId) return;
-        fetch(window.WP_GRAPHQL_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            query: `query GetLiveStats($postId: Int!) { liveArtworkStats(postId: $postId) { likeCount guestComments { id parentId author content date } } }`,
-            variables: { postId: parseInt(postId) }
-          })
-        })
-        .then(res => res.json())
-        .then(res => {
-          const stats = res?.data?.liveArtworkStats;
-          if (stats && currentWork && currentWork.databaseId == postId) {
-            currentWork.likeCount = stats.likeCount || 0;
-            currentWork.guestComments = stats.guestComments || [];
-            updateWorkStatsUI();
-            renderComments();
-          }
-        })
-        .catch(err => console.error(err));
+      function fetchLiveStats(_postId) {
+        // にゃんず版ではWP GraphQLは使用せず、ローカルLike状態を反映
+        updateWorkStatsUI();
       }
 
       function renderComments() {
@@ -2290,50 +1866,11 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
           commentSubmitBtn.textContent = '送信中...';
         }
 
-        if (window.WP_GRAPHQL_URL) {
-          fetch(window.WP_GRAPHQL_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              query: `mutation AddComment($postId: Int!, $author: String!, $content: String!, $parentId: ID) {
-                createComment(input: {
-                  commentOn: $postId,
-                  author: $author,
-                  content: $content,
-                  parent: $parentId
-                }) {
-                  success
-                  comment { id date content }
-                }
-              }`,
-              variables: {
-                postId: parseInt(currentWork.databaseId),
-                author: author,
-                content: content,
-                parentId: activeReplyId ? String(activeReplyId) : null
-              }
-            })
-          })
-          .then(res => res.json())
-          .then(res => {
-            if (res?.data?.createComment?.success) {
-              if (commentContentInput) commentContentInput.value = '';
-              cancelReply();
-              fetchLiveStats(currentWork.databaseId);
-            } else {
-              alert("コメントの投稿に失敗しました。時間をおいて再試行してください。");
-            }
-          })
-          .catch(err => {
-            console.error(err);
-            alert("ネットワークエラーが発生しました。");
-          })
-          .finally(() => {
-            if (commentSubmitBtn) {
-              commentSubmitBtn.disabled = false;
-              commentSubmitBtn.textContent = '送信';
-            }
-          });
+        // WordPressへの通信は行わず、準備中メッセージで安全に処理
+        alert("現在コメント機能は準備中です。");
+        if (commentSubmitBtn) {
+          commentSubmitBtn.disabled = false;
+          commentSubmitBtn.textContent = '送信';
         }
       }
 
@@ -2501,7 +2038,7 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
         // 操作ヒント閉じる処理 (ボタン・右上の✕・背景タップ)
         const closeExploreHint = () => {
           if (exploreHintOverlay) exploreHintOverlay.style.display = 'none';
-          localStorage.setItem('miu_explore_hint_seen', 'true');
+          localStorage.setItem('nyans_explore_hint_seen', 'true');
         };
 
         exploreHintOkBtn?.addEventListener('click', closeExploreHint);
@@ -2647,7 +2184,7 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
         }
 
         // モデル名 & キャラクターカラー
-        if (exploreModelName) exploreModelName.textContent = photo.modelName || 'Miu';
+        if (exploreModelName) exploreModelName.textContent = photo.modelName || 'にゃんず';
         if (exploreModelChip) {
           exploreModelChip.style.backgroundColor = photo.modelColor || '#f43f5e';
           exploreModelChip.style.boxShadow = `0 0 10px ${photo.modelColor || '#f43f5e'}`;
@@ -2736,7 +2273,8 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
 
       function updateExploreLikeUI(photo) {
         if (!exploreLikeBtn || !photo) return;
-        const isLiked = isPostLiked(photo.databaseId);
+        const targetId = photo.workId || photo.slug || photo.id || photo.databaseId;
+        const isLiked = isPostLiked(targetId);
         exploreLikeBtn.classList.toggle('is-liked', isLiked);
 
         // 作品全体のLike数を反映
@@ -2749,38 +2287,34 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
 
       function triggerExploreLike(e) {
         const photo = allPhotosFlat[exploreState.photoIndex];
-        if (!photo || !photo.databaseId) return;
+        if (!photo) return;
+        const targetId = photo.workId || photo.slug || photo.id || photo.databaseId;
+        if (!targetId) return;
 
         const model = galleryData.find(m => m.id === photo.characterId);
         const work = model?.works.find(w => w.id === photo.workId);
 
-        if (!isPostLiked(photo.databaseId)) {
-          markPostAsLiked(photo.databaseId);
-          if (work) work.likeCount = (work.likeCount || 0) + 1;
+        const isNowLiked = togglePostLike(targetId);
+        if (work) {
+          if (isNowLiked) {
+            work.likeCount = (work.likeCount || 0) + 1;
+          } else {
+            work.likeCount = Math.max(0, (work.likeCount || 0) - 1);
+          }
         }
 
         updateExploreLikeUI(photo);
         updateWorkStatsUI();
 
-        // ハートバーストアニメーション
-        const heart = document.createElement('div');
-        heart.className = 'fixed pointer-events-none z-[99999] transform -translate-x-1/2 -translate-y-1/2 animate-heart-burst';
-        heart.innerHTML = `<svg viewBox="0 0 24 24" class="w-28 h-28 fill-current text-rose-500 drop-shadow-[0_0_30px_rgba(244,63,94,0.85)]"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`;
-        heart.style.left = (e?.clientX || window.innerWidth / 2) + 'px';
-        heart.style.top = (e?.clientY || window.innerHeight / 2) + 'px';
-        document.body.appendChild(heart);
-        setTimeout(() => heart.remove(), 1000);
-
-        // バックエンド GraphQL 同期
-        if (window.WP_GRAPHQL_URL) {
-          fetch(window.WP_GRAPHQL_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              query: `mutation IncrementLike($postId: Int!) { incrementLike(input: {postId: $postId}) { newCount } }`,
-              variables: { postId: parseInt(photo.databaseId) }
-            })
-          }).catch(err => console.error('Explore like failed', err));
+        if (isNowLiked) {
+          // ハートバーストアニメーション (ON時のみ)
+          const heart = document.createElement('div');
+          heart.className = 'fixed pointer-events-none z-[99999] transform -translate-x-1/2 -translate-y-1/2 animate-heart-burst';
+          heart.innerHTML = `<svg viewBox="0 0 24 24" class="w-28 h-28 fill-current text-rose-500 drop-shadow-[0_0_30px_rgba(244,63,94,0.85)]"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`;
+          heart.style.left = (e?.clientX || window.innerWidth / 2) + 'px';
+          heart.style.top = (e?.clientY || window.innerHeight / 2) + 'px';
+          document.body.appendChild(heart);
+          setTimeout(() => heart.remove(), 1000);
         }
       }
 
@@ -2857,7 +2391,7 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
       }
 
       function checkExploreHint() {
-        const seen = localStorage.getItem('miu_explore_hint_seen');
+        const seen = localStorage.getItem('nyans_explore_hint_seen') || localStorage.getItem('miu_explore_hint_seen');
         if (!seen && exploreHintOverlay) {
           exploreHintOverlay.style.display = 'flex';
         }
@@ -2987,7 +2521,7 @@ const initialBorderLight = initialLuminance < 70 ? 'rgba(255, 255, 255, 0.28)' :
             e.preventDefault();
             if (exploreHintOverlay && exploreHintOverlay.style.display !== 'none') {
               exploreHintOverlay.style.display = 'none';
-              localStorage.setItem('miu_explore_hint_seen', 'true');
+              localStorage.setItem('nyans_explore_hint_seen', 'true');
               return;
             }
             if (exploreState.tagsOpen) {

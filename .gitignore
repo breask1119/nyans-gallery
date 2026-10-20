@@ -30,3 +30,13 @@ Desktop.ini
 *.njsproj
 *.sln
 *.sw?
+
+# EmDash local data
+data.db
+data.db-*
+uploads/
+
+# Secrets
+.env
+.env.*
+!.env.example
