@@ -148,6 +148,15 @@ const FINAL_RATINGS =
     'EXPLICIT',
   ]);
 
+/* ============================================================
+ * 猫（Cat）設定
+ * ============================================================ */
+
+const CAT_OPTIONS = [
+  { slug: 'rin', name: '凛ちゃん' },
+];
+
+
 
 /* ============================================================
  * Gemini使用量
@@ -2010,85 +2019,24 @@ ${escapeHtml(
 <div class="human-box">
 
 <label class="select-check">
-
 <input
   type="checkbox"
   class="js-selected"
 >
-
 採用する
+</label>
 
+<label class="gallery-visible-check">
+<input
+  type="checkbox"
+  class="js-gallery-visible"
+  checked
+>
+☑ ギャラリー掲載
 </label>
 
 <label>
-
-最終Rating
-
-<select class="js-rating">
-
-<option
-  ${rating === 'SAFE'
-              ?
-              'selected'
-              :
-              ''
-            }
->
-SAFE
-</option>
-
-<option
-  ${rating === 'MILD'
-              ?
-              'selected'
-              :
-              ''
-            }
->
-MILD
-</option>
-
-<option
-  ${rating === 'SENSITIVE'
-              ?
-              'selected'
-              :
-              ''
-            }
->
-SENSITIVE
-</option>
-
-<option
-  ${rating === 'EXPLICIT'
-              ?
-              'selected'
-              :
-              ''
-            }
->
-EXPLICIT
-</option>
-
-<option
-  ${rating === 'REVIEW'
-              ?
-              'selected'
-              :
-              ''
-            }
->
-REVIEW
-</option>
-
-</select>
-
-</label>
-
-<label>
-
 並び順
-
 <input
   class="js-order"
   type="number"
@@ -2096,18 +2044,14 @@ REVIEW
   step="1"
   placeholder="例: ${index + 1}"
 >
-
 </label>
 
 <label>
-
 メモ
-
 <textarea
   class="js-notes"
   rows="2"
 ></textarea>
-
 </label>
 
 </div>
@@ -2531,11 +2475,25 @@ h3 {
   font-size: 13px;
 }
 
-.human-box .select-check {
+.human-box .select-check,
+.human-box .gallery-visible-check {
   display: flex;
   align-items: center;
   font-weight: 700;
-  font-size: 15px;
+  font-size: 14px;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.human-box .gallery-visible-check {
+  color: #38bdf8;
+  font-size: 13px;
+}
+
+.human-box .select-check input,
+.human-box .gallery-visible-check input {
+  width: auto;
+  cursor: pointer;
 }
 
 .human-box input,
@@ -2691,6 +2649,7 @@ button {
 }
 
 .post-settings input,
+.post-settings select,
 .post-settings textarea {
   width: 100%;
   box-sizing: border-box;
@@ -2704,6 +2663,7 @@ button {
 }
 
 .post-settings input:focus,
+.post-settings select:focus,
 .post-settings textarea:focus {
   outline: 2px solid #38bdf8;
   border-color: transparent;
@@ -2782,75 +2742,12 @@ ${isRatingOnly ? 'Ratingのみ' : '詳細'}
 
 </p>
 
-${isRatingOnly ? `
 <div class="summary">
-
 <span>
 総数
 ${reviewData.summary.total_images}
 </span>
-
-<span>
-SAFE
-${reviewData.summary.safe ?? 0}
-</span>
-
-<span>
-MILD
-${reviewData.summary.mild ?? 0}
-</span>
-
-<span>
-SENSITIVE
-${reviewData.summary.sensitive ?? 0}
-</span>
-
-<span>
-EXPLICIT
-${reviewData.summary.explicit ?? 0}
-</span>
-
-<span>
-REVIEW
-${reviewData.summary.review ?? 0}
-</span>
-
 </div>
-` : `
-<div class="summary">
-
-<span>
-総数
-${reviewData.summary.total_images}
-</span>
-
-<span>
-TOP_PICK
-${reviewData.summary.top_pick}
-</span>
-
-<span>
-USE
-${reviewData.summary.use}
-</span>
-
-<span>
-REVIEW
-${reviewData.summary.review}
-</span>
-
-<span>
-BACKUP
-${reviewData.summary.backup}
-</span>
-
-<span>
-SKIP
-${reviewData.summary.skip}
-</span>
-
-</div>
-`}
 
 </div>
 
@@ -2867,41 +2764,60 @@ ${reviewData.summary.skip}
 </span>
 
 <span>
-SAFE
-<b id="safeCount">
+ギャラリー掲載
+<b id="galleryVisibleCount">
 0
 </b>
-</span>
-
-<span>
-MILD
-<b id="mildCount">
-0
-</b>
-</span>
-
-<span>
-SENSITIVE
-<b id="sensitiveCount">
-0
-</b>
-</span>
-
-<span>
-EXPLICIT
-<b id="explicitCount">
-0
-</b>
+枚
 </span>
 
 </div>
 
 <div class="post-settings">
 
+<div class="field">
+
+<label for="postCatSlug">
+対象の猫 (Cat)
+</label>
+
+<select id="postCatSlug">
+${CAT_OPTIONS.map(cat => `
+  <option value="${escapeHtml(cat.slug)}" ${cat.slug === (reviewData.cat_slug || reviewData.model || 'rin') ? 'selected' : ''}>
+    ${escapeHtml(cat.name)} (${escapeHtml(cat.slug)})
+  </option>
+`).join('')}
+</select>
+
+<div class="hint">
+※作品が所属する猫を選択してください。
+</div>
+
+</div>
+
+<div class="field">
+
+<label for="postTitle">
+作品タイトル
+</label>
+
+<input
+  type="text"
+  id="postTitle"
+  placeholder="例: 窓辺でまどろむ凛ちゃん"
+  value="${escapeHtml(reviewData.title || reviewData.theme || '')}"
+>
+
+<div class="hint">
+※ギャラリーやInstagramに表示される作品名です。
+</div>
+
+</div>
+
 <div class="field full-width">
 
 <label for="postComment">
-コメント（投稿本文）
+投稿コメント
 </label>
 
 <textarea
@@ -2911,15 +2827,15 @@ EXPLICIT
 >${escapeHtml(reviewData.comment || '')}</textarea>
 
 <div class="hint">
-※空欄の場合はコメントなしで処理されます。
+※EmDashの作品コメントおよびInstagram投稿キャプションに使用されます。
 </div>
 
 </div>
 
-<div class="field">
+<div class="field full-width">
 
 <label for="postPublishAt">
-投稿時間（予約日時）
+公開・投稿予定日時
 </label>
 
 <div class="datetime-row">
@@ -2945,32 +2861,6 @@ EXPLICIT
   id="publishAtStatus"
 >
 未指定: 即時投稿になります
-</div>
-
-</div>
-
-<div class="field">
-
-<label for="postRatingSpec">
-個別指定（投稿範囲・レーティング調整用）
-</label>
-
-<input
-  type="text"
-  id="postRatingSpec"
-  placeholder="例: 全画像をスレッズ除外、13-23 GALLERY （空欄なら自動設定）"
-  value="${escapeHtml(reviewData.custom_rating_spec || '')}"
->
-
-<div
-  class="hint"
-  id="autoRatingSpecHint"
->
-自動計算: (採用画像を選択すると反映されます)
-</div>
-
-<div class="hint" style="color: #94a3b8;">
-※「スレッズ除外」「13-23 GALLERY」などの範囲指定は自動でカードのRatingと合体されます。
 </div>
 
 </div>
@@ -3038,137 +2928,30 @@ const cards =
 
 
 function refresh() {
-  let counts = {
-    SAFE: 0,
-    MILD: 0,
-    SENSITIVE: 0,
-    EXPLICIT: 0,
-  };
+  let selected = 0;
+  let galleryVisible = 0;
 
-  let selected =
-    0;
+  cards.forEach(card => {
+    const isSelected = card.querySelector('.js-selected').checked;
+    card.classList.toggle('selected-card', isSelected);
 
-  cards.forEach(
-    card => {
-
-      const isSelected =
-        card
-          .querySelector(
-            '.js-selected'
-          )
-          .checked;
-
-      card
-        .classList
-        .toggle(
-          'selected-card',
-          isSelected
-        );
-
-      if (isSelected) {
-        selected++;
-
-        const rating =
-          card
-            .querySelector(
-              '.js-rating'
-            )
-            .value;
-
-        if (
-          counts[rating] != null
-        ) {
-          counts[rating]++;
-        }
+    if (isSelected) {
+      selected++;
+      const isVisible = card.querySelector('.js-gallery-visible')?.checked ?? true;
+      if (isVisible) {
+        galleryVisible++;
       }
     }
-  );
+  });
 
-  document
-    .getElementById(
-      'selectedCount'
-    )
-    .textContent =
-    selected;
+  document.getElementById('selectedCount').textContent = selected;
+  const gCountEl = document.getElementById('galleryVisibleCount');
+  if (gCountEl) {
+    gCountEl.textContent = galleryVisible;
+  }
 
-  document
-    .getElementById(
-      'safeCount'
-    )
-    .textContent =
-    counts.SAFE;
-
-  document
-    .getElementById(
-      'mildCount'
-    )
-    .textContent =
-    counts.MILD;
-
-  document
-    .getElementById(
-      'sensitiveCount'
-    )
-    .textContent =
-    counts.SENSITIVE;
-
-  document
-    .getElementById(
-      'explicitCount'
-    )
-    .textContent =
-    counts.EXPLICIT;
-
-  updateAutoRatingSpecHint();
   updatePublishAtStatus();
 }
-
-
-function getSelectedApprovedList() {
-  const selectedCards = [];
-  cards.forEach(card => {
-    if (card.querySelector('.js-selected').checked) {
-      const order = Number(card.querySelector('.js-order').value) || 0;
-      const rating = card.querySelector('.js-rating').value;
-      selectedCards.push({ order, rating });
-    }
-  });
-  selectedCards.sort((a, b) => a.order - b.order);
-  return selectedCards;
-}
-
-
-function updateAutoRatingSpecHint() {
-  const hintEl = document.getElementById('autoRatingSpecHint');
-  if (!hintEl) return;
-
-  const approvedList = getSelectedApprovedList();
-  if (approvedList.length === 0) {
-    hintEl.textContent = '自動計算: (採用画像を選択すると反映されます)';
-    return;
-  }
-
-  const groups = [];
-  let start = 1;
-  let current = approvedList[0].rating;
-
-  for (let i = 1; i <= approvedList.length; i++) {
-    const rating = i < approvedList.length ? approvedList[i].rating : null;
-    if (rating !== current) {
-      const end = i;
-      groups.push(
-        start === end
-          ? start + ' ' + current
-          : start + '-' + end + ' ' + current
-      );
-      start = i + 1;
-      current = rating;
-    }
-  }
-
-  hintEl.textContent = '自動計算: ' + groups.join(', ');
-}
-
 
 function updatePublishAtStatus() {
   const input = document.getElementById('postPublishAt');
@@ -3332,145 +3115,64 @@ function buildReviewResult() {
   message.className =
     'msg';
 
-  const approved =
-    [];
+  const approved = [];
+  let visibleCount = 0;
 
-  for (
-    const card
-    of cards
-  ) {
-    if (
-      !card
-        .querySelector(
-          '.js-selected'
-        )
-        .checked
-    ) {
+  for (const card of cards) {
+    if (!card.querySelector('.js-selected').checked) {
       continue;
     }
 
-    const file =
-      card.dataset.file;
+    const file = card.dataset.file;
+    const order = Number(card.querySelector('.js-order').value);
+    const galleryVisible = card.querySelector('.js-gallery-visible')?.checked ?? true;
+    const notes = card.querySelector('.js-notes').value.trim();
 
-    const rating =
-      card
-        .querySelector(
-          '.js-rating'
-        )
-        .value;
-
-    const order =
-      Number(
-        card
-          .querySelector(
-            '.js-order'
-          )
-          .value
-      );
-
-    const notes =
-      card
-        .querySelector(
-          '.js-notes'
-        )
-        .value
-        .trim();
-
-    if (
-      rating ===
-      'REVIEW'
-    ) {
-      throw new Error(
-        file +
-        ' の最終RatingがREVIEWのままです。'
-      );
+    if (!Number.isInteger(order) || order < 1) {
+      throw new Error(file + ' の並び順を1以上の整数で入力してください。');
     }
 
-    if (
-      !Number.isInteger(
-        order
-      )
-      ||
-      order < 1
-    ) {
-      throw new Error(
-        file +
-        ' の並び順を1以上の整数で入力してください。'
-      );
+    if (galleryVisible) {
+      visibleCount++;
     }
 
     approved.push({
-      original_file:
-        file,
-
-      rating,
-
+      original_file: file,
       order,
-
+      gallery_visible: galleryVisible,
       notes,
     });
   }
 
-  if (
-    !approved.length
-  ) {
-    throw new Error(
-      '採用画像を1枚以上選んでください。'
-    );
+  if (!approved.length) {
+    throw new Error('採用画像を1枚以上選んでください。');
   }
 
-  approved.sort(
-    (
-      a,
-      b
-    ) =>
-      a.order -
-      b.order
-  );
+  approved.sort((a, b) => a.order - b.order);
 
-  const orders =
-    approved.map(
-      item =>
-        item.order
-    );
-
-  if (
-    new Set(
-      orders
-    ).size !==
-    orders.length
-  ) {
-    throw new Error(
-      '並び順が重複しています。'
-    );
+  const orders = approved.map(item => item.order);
+  if (new Set(orders).size !== orders.length) {
+    throw new Error('並び順が重複しています。');
   }
 
-  for (
-    let i = 0;
-    i <
-    approved.length;
-    i++
-  ) {
-    if (
-      approved[i]
-        .order !==
-      i + 1
-    ) {
-      throw new Error(
-        '並び順は1〜' +
-        approved.length +
-        'の連番にしてください。'
-      );
+  for (let i = 0; i < approved.length; i++) {
+    if (approved[i].order !== i + 1) {
+      throw new Error('並び順は1〜' + approved.length + 'の連番にしてください。');
     }
   }
 
-  const postComment =
-    (document.getElementById('postComment')?.value || '')
-      .trim();
+  // ギャラリー掲載0枚チェック（警告確認、強制停止はしない）
+  if (visibleCount === 0) {
+    const ok = confirm('⚠️ ギャラリー掲載ONの画像が0枚です。\n（Webギャラリーには表示されず、Instagram専用作品となります）\nこのまま処理を続行しますか？');
+    if (!ok) {
+      throw new Error('処理を中断しました。ギャラリー掲載にチェックを入れてください。');
+    }
+  }
 
-  const rawPublishAt =
-    (document.getElementById('postPublishAt')?.value || '')
-      .trim();
+  const catSlug = document.getElementById('postCatSlug')?.value || 'rin';
+  const postTitle = (document.getElementById('postTitle')?.value || '').trim() || REVIEW_DATA.theme || '猫作品';
+  const postComment = (document.getElementById('postComment')?.value || '').trim();
+  const rawPublishAt = (document.getElementById('postPublishAt')?.value || '').trim();
 
   let publishAt = '';
   if (rawPublishAt) {
@@ -3478,36 +3180,16 @@ function buildReviewResult() {
     publishAt = dt.length === 16 ? dt + ':00' : dt;
   }
 
-  const customRatingSpec =
-    (document.getElementById('postRatingSpec')?.value || '')
-      .trim();
-
   return {
-    schema_version:
-      '1.0',
-
-    created_at:
-      new Date()
-        .toISOString(),
-
-    model:
-      REVIEW_DATA.model,
-
-    theme:
-      REVIEW_DATA.theme,
-
-    source_folder:
-      REVIEW_DATA.source_folder,
-
-    comment:
-      postComment,
-
-    publish_at:
-      publishAt,
-
-    custom_rating_spec:
-      customRatingSpec,
-
+    schema_version: '2.0',
+    created_at: new Date().toISOString(),
+    cat_slug: catSlug,
+    title: postTitle,
+    model: catSlug,
+    theme: postTitle,
+    source_folder: REVIEW_DATA.source_folder,
+    comment: postComment,
+    publish_at: publishAt,
     approved,
   };
 }
@@ -3696,20 +3378,23 @@ document
           'msg ok';
 
         message.textContent =
-          '承認が完了しました！\\n\\n' +
+          '承認が完了しました！\n\n' +
+          'Cat: ' +
+          (result.cat_slug || output.cat_slug || 'rin') +
+          '\n' +
+          'タイトル: ' +
+          (result.title || output.title || '') +
+          '\n' +
           '採用画像: ' +
           result.image_count +
-          '枚\\n' +
-          'Rating: ' +
-          result.rating_spec +
-          '\\n' +
-          '投稿時間: ' +
+          '枚\n' +
+          '投稿予定時間: ' +
           (result.publish_at || '即時投稿') +
-          '\\n' +
-          'コメント: ' +
+          '\n' +
+          '投稿コメント: ' +
           (result.comment || 'なし') +
-          '\\n\\n' +
-          '出力先:\\n' +
+          '\n\n' +
+          '出力先:\n' +
           result.approved_dir;
 
         if (result.import_started) {
@@ -4265,34 +3950,15 @@ async function startReviewServer({
              * model / theme / source_folder を
              * そのまま信用しない。
              */
-            if (
-              String(
-                data?.model ||
-                ''
-              ) !==
-              String(
-                reviewData.model ||
-                ''
-              )
-            ) {
-              throw new Error(
-                'モデル名が元レビューと一致しません。'
-              );
+            const catSlug = data?.cat_slug || data?.model || 'rin';
+            const catValid = CAT_OPTIONS.some(c => c.slug === catSlug);
+            if (!catValid) {
+              throw new Error(`無効なCatが選択されています: ${catSlug}`);
             }
 
-            if (
-              String(
-                data?.theme ||
-                ''
-              ) !==
-              String(
-                reviewData.theme ||
-                ''
-              )
-            ) {
-              throw new Error(
-                'テーマ名が元レビューと一致しません。'
-              );
+            const title = (data?.title || data?.theme || '').trim();
+            if (!title) {
+              throw new Error('作品タイトルを入力してください。');
             }
 
             if (
@@ -4382,9 +4048,14 @@ async function startReviewServer({
                     ?.imageCount ||
                   0,
 
-                rating_spec:
+                cat_slug:
                   applied
-                    ?.ratingSpec ||
+                    ?.cat_slug ||
+                  '',
+
+                title:
+                  applied
+                    ?.title ||
                   '',
 
                 publish_at:
@@ -4784,20 +4455,23 @@ async function applyReviewResult(
     );
   }
 
-  const rawModelName =
+  const catSlug =
     String(
+      data.cat_slug ||
       data.model ||
-      ''
+      'rin'
     ).trim();
 
-  const modelName =
-    rawModelName.replace(/^\d+[\._\s-]+/, '') || rawModelName;
+  const modelName = catSlug;
 
-  const themeName =
+  const artworkTitle =
     String(
+      data.title ||
       data.theme ||
-      ''
+      '猫作品'
     ).trim();
+
+  const themeName = artworkTitle;
 
   const sourceFolder =
     path.resolve(
@@ -4824,20 +4498,15 @@ async function applyReviewResult(
       ? rawPublishAt.replace('T', ' ')
       : '';
 
-  const customRatingSpec =
-    String(
-      data.custom_rating_spec ||
-      data.spec ||
-      ''
-    ).trim();
+  const customRatingSpec = '';
 
   if (
-    !modelName ||
-    !themeName ||
+    !catSlug ||
+    !artworkTitle ||
     !data.source_folder
   ) {
     throw new Error(
-      'model / theme / source_folder が不足しています。'
+      'cat_slug / title / source_folder が不足しています。'
     );
   }
 
@@ -4921,16 +4590,6 @@ async function applyReviewResult(
     fileSet.add(
       item.original_file
     );
-
-    if (
-      !FINAL_RATINGS.has(
-        item.rating
-      )
-    ) {
-      throw new Error(
-        `${item.original_file}: Ratingは SAFE / MILD / SENSITIVE / EXPLICIT のいずれかにしてください。`
-      );
-    }
 
     if (
       !Number.isInteger(
@@ -5070,42 +4729,42 @@ async function applyReviewResult(
     );
 
     manifestItems.push({
-      order:
+      filename:
+        newFile,
+
+      sort_order:
         item.order,
+
+      gallery_visible:
+        item.gallery_visible !== false,
 
       new_file:
         newFile,
 
+      order:
+        item.order,
+
       original_file:
         item.original_file,
 
-      rating:
-        item.rating,
-
       notes:
-        item.notes,
+        item.notes || '',
     });
   }
 
-  const ratingSpec =
-    normalizeAndMergeRatingSpec(
-      customRatingSpec,
-      approved
-    );
-
   const manifest = {
     schema_version:
-      '1.0',
+      '2.0',
 
     created_at:
       new Date()
         .toISOString(),
 
-    model:
-      modelName,
+    cat_slug:
+      catSlug,
 
-    theme:
-      themeName,
+    title:
+      artworkTitle,
 
     comment:
       postComment,
@@ -5126,11 +4785,15 @@ async function applyReviewResult(
     image_count:
       manifestItems.length,
 
-    rating_spec:
-      ratingSpec,
-
     images:
       manifestItems,
+
+    // 互換キー
+    model:
+      catSlug,
+
+    theme:
+      artworkTitle,
   };
 
   /* ========================================================
@@ -5152,20 +4815,6 @@ async function applyReviewResult(
 
 
   /* ========================================================
-   * rating-spec.txt
-   * ======================================================== */
-
-  await fs.writeFile(
-    path.join(
-      approvedDir,
-      'rating-spec.txt'
-    ),
-    `${ratingSpec}\n`,
-    'utf8'
-  );
-
-
-  /* ========================================================
    * import-instruction.txt
    * ======================================================== */
 
@@ -5174,10 +4823,9 @@ async function applyReviewResult(
       approvedDir,
       'import-instruction.txt'
     ),
-    `モデル: ${modelName}
-テーマ: ${themeName}
+    `Cat: ${catSlug}
+タイトル: ${artworkTitle}
 画像: ${manifestItems.length}枚
-Rating: ${ratingSpec}
 投稿時間: ${publishAt || '即時投稿'}
 コメント: ${postComment || 'なし'}
 
@@ -5187,9 +4835,6 @@ ${approvedDir}
 このフォルダ内の番号付き画像を使用してください。
 元画像は変更・削除していません。
 
-import_artwork.mjs 実行用:
-import-command.txt
-
 Windowsダブルクリック実行用:
 run-import.bat
 
@@ -5197,90 +4842,6 @@ run-import.bat
 `,
     'utf8'
   );
-
-
-  /* ========================================================
-   * import-command.txt
-   * ======================================================== */
-
-  const relativeApprovedDir =
-    path
-      .relative(
-        path.dirname(
-          __dirname
-        ),
-        approvedDir
-      )
-      .replace(
-        /\\/g,
-        '\\'
-      );
-
-
-  const importCommand =
-    `node ".\\.ai-work\\import_artwork.mjs" \`
-  ".\\${relativeApprovedDir}" \`
-  "${themeName.replace(
-      /"/g,
-      '\\"'
-    )}" \`
-  "${modelName.replace(
-      /"/g,
-      '\\"'
-    )}" \`
-  "${ratingSpec.replace(
-      /"/g,
-      '\\"'
-    )}"` +
-    (publishAt ? ` \`\n  "${publishAt.replace(/"/g, '\\"')}"` : '') +
-    (postComment ? ` \`\n  --comment="${postComment.replace(/"/g, '\\"')}"` : '') +
-    ' `\n  --yes\n';
-
-
-  await fs.writeFile(
-    path.join(
-      approvedDir,
-      'import-command.txt'
-    ),
-    importCommand,
-    'utf8'
-  );
-
-
-  /* ========================================================
-   * run-import.bat
-   * ======================================================== */
-
-  const batApprovedDir =
-    approvedDir
-      .replace(
-        /"/g,
-        '""'
-      );
-
-
-  const batTitle =
-    themeName
-      .replace(
-        /"/g,
-        '""'
-      );
-
-
-  const batModel =
-    modelName
-      .replace(
-        /"/g,
-        '""'
-      );
-
-
-  const batRating =
-    ratingSpec
-      .replace(
-        /"/g,
-        '""'
-      );
 
 
   /* ========================================================
@@ -5295,13 +4856,13 @@ cd /d "%~dp0\\..\\..\\..\\.."
 
 echo.
 echo ==================================
-echo Miu Artwork Import
+echo Nyans Artwork Import
 echo ==================================
 echo.
 echo Loading manifest.json...
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$m = Get-Content -Raw -Encoding UTF8 '%~dp0manifest.json' | ConvertFrom-Json; Write-Host ('Model    : ' + $m.model); Write-Host ('Theme    : ' + $m.theme); Write-Host ('Rating   : ' + $m.rating_spec); if ($m.publish_at) { Write-Host ('Publish  : ' + $m.publish_at) } else { Write-Host 'Publish  : 即時投稿' }; if ($m.comment) { Write-Host ('Comment  : ' + $m.comment) }; Write-Host ''; Write-Host ('Folder   : ' + $m.approved_folder); Write-Host ''; $a = @($m.approved_folder, $m.theme, $m.model, $m.rating_spec); if ($m.publish_at) { $a += [string]$m.publish_at }; if ($m.comment) { $a += ('--comment=' + [string]$m.comment) }; $a += '--yes'; & node '.\\.ai-work\\import_artwork.mjs' @a; exit $LASTEXITCODE"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$m = Get-Content -Raw -Encoding UTF8 '%~dp0manifest.json' | ConvertFrom-Json; $cat = if ($m.cat_slug) { $m.cat_slug } else { $m.model }; $title = if ($m.title) { $m.title } else { $m.theme }; Write-Host ('Cat      : ' + $cat); Write-Host ('Title    : ' + $title); if ($m.publish_at) { Write-Host ('Publish  : ' + $m.publish_at) } else { Write-Host 'Publish  : 即時投稿' }; if ($m.comment) { Write-Host ('Comment  : ' + $m.comment) }; Write-Host ''; Write-Host ('Folder   : ' + $m.approved_folder); Write-Host ''; $a = @($m.approved_folder, $title, $cat); if ($m.publish_at) { $a += [string]$m.publish_at }; if ($m.comment) { $a += ('--comment=' + [string]$m.comment) }; $a += '--yes'; & node '.\\.ai-work\\import_artwork.mjs' @a; exit $LASTEXITCODE"
 
 set EXIT_CODE=%ERRORLEVEL%
 
@@ -5349,19 +4910,15 @@ exit /b %EXIT_CODE%
   );
 
   console.log(
-    `モデル: ${modelName}`
+    `Cat: ${catSlug}`
   );
 
   console.log(
-    `テーマ: ${themeName}`
+    `タイトル: ${artworkTitle}`
   );
 
   console.log(
     `採用画像: ${manifestItems.length}枚`
-  );
-
-  console.log(
-    `Rating: ${ratingSpec}`
   );
 
   console.log(
@@ -5436,7 +4993,11 @@ exit /b %EXIT_CODE%
     imageCount:
       manifestItems.length,
 
-    ratingSpec,
+    cat_slug:
+      catSlug,
+
+    title:
+      artworkTitle,
 
     publishAt,
 

@@ -36,6 +36,13 @@ data.db
 data.db-*
 uploads/
 
+# Automation local work & test assets
+automation/.ai-work/artwork-approved/
+automation/.ai-work/artwork-review/
+automation/.ai-work/artwork-inbox/
+automation/.ai-work/*_backup_*
+automation/test-*/
+
 # Secrets
 .env
 .env.*
