@@ -63,7 +63,9 @@ const POSTIZ_BASE_URL = rawPostizUrl.endsWith('/api') ? rawPostizUrl : `${rawPos
 const POSTIZ_API_KEY = process.env.POSTIZ_API_KEY || '';
 const NYANS_POSTIZ_CHANNEL_ID = process.env.NYANS_POSTIZ_CHANNEL_ID || '';
 const NYANS_IMPORT_TOKEN = process.env.NYANS_IMPORT_TOKEN || '';
-const NYANS_UPDATE_STATUS_URL = process.env.NYANS_UPDATE_STATUS_URL || 'http://127.0.0.1:4321/api/nyans/update-status';
+
+const NYANS_EMDASH_API_URL = (process.env.NYANS_EMDASH_API_URL || 'http://localhost:4321').replace(/\/+$/, '');
+const NYANS_UPDATE_STATUS_URL = process.env.NYANS_UPDATE_STATUS_URL || `${NYANS_EMDASH_API_URL}/api/nyans/update-status`;
 
 const NYANS_POSTIZ_DRY_RUN = process.env.NYANS_POSTIZ_DRY_RUN !== '0';
 

@@ -8,13 +8,21 @@
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",
+    "build:local": "astro build",
+    "build:cf": "cross-env DEPLOY_TARGET=cloudflare astro build",
     "preview": "astro preview",
+    "preview:cf": "wrangler dev",
+    "start": "node dist/server/entry.mjs",
+    "start:standalone": "node dist/server/entry.mjs",
+    "dev:nyans": "astro dev --host localhost --port 4321",
     "astro": "astro"
   },
   "dependencies": {
+    "@astrojs/cloudflare": "^14.4.2",
     "@astrojs/node": "^11.1.8",
     "@astrojs/react": "^7.1.0",
     "@astrojs/sitemap": "^3.7.2",
+    "@emdash-cms/cloudflare": "^1.3.1",
     "@tailwindcss/vite": "^4.3.3",
     "astro": "^7.4.0",
     "emdash": "^1.3.1",
@@ -23,6 +31,9 @@
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
-    "sass-embedded": "^1.99.0"
+    "@cloudflare/workers-types": "^5.20261023.1",
+    "cross-env": "^10.1.0",
+    "sass-embedded": "^1.99.0",
+    "wrangler": "^4.152.0"
   }
 }

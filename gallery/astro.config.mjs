@@ -1,12 +1,45 @@
 // astro.config.mjs
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "astro/config";
-import node from "@astrojs/node";
 import react from "@astrojs/react";
 import sitemap from "@astrojs/sitemap";
 import tailwindcss from "@tailwindcss/vite";
 
-import emdash, { local } from "emdash/astro";
-import { sqlite } from "emdash/db";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const isCloudflare = process.env.DEPLOY_TARGET === "cloudflare";
+
+// ---------------------------------------------------------
+// Adapter & EmDash Database / Storage Switching
+// ---------------------------------------------------------
+let adapter;
+let emdashDb;
+let emdashStorage;
+
+if (isCloudflare) {
+  const { default: cloudflare } = await import("@astrojs/cloudflare");
+  const { d1, r2 } = await import("@emdash-cms/cloudflare");
+  adapter = cloudflare({
+    // Cloudflare Images binding (IMAGES) を不要化し、画像は R2 + EmDash media route で配信
+    imageService: "passthrough",
+  });
+  emdashDb = d1({ binding: "DB" });
+  emdashStorage = r2({ binding: "MEDIA" });
+} else {
+  const { default: node } = await import("@astrojs/node");
+  const { local } = await import("emdash/astro");
+  const { sqlite } = await import("emdash/db");
+  adapter = node({ mode: "standalone" });
+  emdashDb = sqlite({ url: "file:./data.db" });
+  emdashStorage = local({
+    directory: "./uploads",
+    baseUrl: "/_emdash/api/media/file",
+  });
+}
+
+const { default: emdash } = await import("emdash/astro");
 
 export default defineConfig({
   // ---------------------------------------------------------
@@ -14,13 +47,10 @@ export default defineConfig({
   // ---------------------------------------------------------
   output: "server",
 
-  adapter: node({
-    mode: "standalone",
-  }),
+  adapter,
 
   // ---------------------------------------------------------
   // Site URL
-  // 環境変数 PUBLIC_SITE_URL またはローカル開発用フォールバック
   // ---------------------------------------------------------
   site: process.env.PUBLIC_SITE_URL || "https://nyans-gallery.local",
 
@@ -33,15 +63,8 @@ export default defineConfig({
 
     // EmDash CMS
     emdash({
-      database: sqlite({
-        url: "file:./data.db",
-      }),
-
-      storage: local({
-        directory: "./uploads",
-        baseUrl: "/_emdash/api/media/file",
-      }),
-
+      database: emdashDb,
+      storage: emdashStorage,
       plugins: [],
     }),
 
@@ -51,17 +74,35 @@ export default defineConfig({
 
   // ---------------------------------------------------------
   // Vite
-  // Tailwind CSS v4
+  // Tailwind CSS v4 & Cloudflare Workers externalization
   // ---------------------------------------------------------
   vite: {
     plugins: [
       tailwindcss(),
     ],
+    resolve: {
+      alias: !isCloudflare
+        ? {
+            "@emdash-cms/cloudflare/db/d1": path.resolve(__dirname, "src/lib/empty-stub.ts"),
+          }
+        : {},
+    },
+    build: {
+      rollupOptions: {
+        external: [
+          "cloudflare:workers",
+        ],
+      },
+    },
+    ssr: {
+      external: [
+        "cloudflare:workers",
+      ],
+    },
   },
 
   // ---------------------------------------------------------
   // Astro Image
-  // 外部プレースホルダー用
   // ---------------------------------------------------------
   image: {
     domains: [

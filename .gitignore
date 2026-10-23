@@ -9,6 +9,16 @@ pnpm-debug.log*
 dist/
 .astro/
 .cache/
+.wrangler/
+**/.wrangler/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+automation/logs/
 
 # Environment variables
 .env

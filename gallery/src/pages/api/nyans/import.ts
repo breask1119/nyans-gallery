@@ -1,10 +1,13 @@
 import type { APIRoute } from 'astro';
 import { getEmDashCollection, handleContentCreate, handleMediaCreate, ulid } from 'emdash';
-import { createDialect } from 'emdash/db/sqlite';
-import { Kysely } from 'kysely';
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
+import {
+  deleteMediaFile,
+  getBackendDb,
+  getBackendEnv,
+  safeTokenCompare,
+  saveMediaFile,
+} from '../../../lib/nyans-backend';
 
 // 最大リクエストボディサイズ (JSON用: 512KB, 単一画像ファイル用: 20MB)
 const MAX_JSON_BODY_BYTES = 512 * 1024;
@@ -34,17 +37,6 @@ function errorResponse(
       headers: { 'Content-Type': 'application/json' },
     }
   );
-}
-
-/**
- * タイミング攻撃を防ぐ安全な文字列比較
- */
-function safeTokenCompare(provided: string, expected: string): boolean {
-  if (!provided || !expected) return false;
-  const bufA = Buffer.from(provided);
-  const bufB = Buffer.from(expected);
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
 }
 
 /**
@@ -99,10 +91,10 @@ function getImageInfo(buf: Buffer): { width: number; height: number; mime: strin
 }
 
 /**
- * ファイル名を安全にサニタイズ（path traversal防止）
+ * ファイル名を安全にサニタイズ（path traversal防止、Node非依存）
  */
 function sanitizeFilename(originalName: string): string {
-  const base = path.basename(originalName);
+  const base = originalName.split(/[/\\]/).pop() || 'image';
   return base.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
@@ -164,11 +156,9 @@ export const GET: APIRoute = async () => {
 /**
  * POST: Automation用 Artwork Import API (dry-run & 実登録対応)
  */
-export const POST: APIRoute = async ({ request }) => {
+export const POST: APIRoute = async ({ request, locals }) => {
   // 1. 認証チェック
-  const expectedToken =
-    process.env.NYANS_IMPORT_TOKEN ||
-    import.meta.env.NYANS_IMPORT_TOKEN;
+  const expectedToken = await getBackendEnv(locals, 'NYANS_IMPORT_TOKEN');
 
   if (!expectedToken) {
     console.error('🚨 [nyans-import] NYANS_IMPORT_TOKEN is not configured on the server.');
@@ -201,7 +191,7 @@ export const POST: APIRoute = async ({ request }) => {
   if (isMultipart) {
     try {
       formData = await request.formData();
-    } catch (err) {
+    } catch {
       return errorResponse(400, 'READ_ERROR', 'multipart データの読み込みに失敗しました。');
     }
 
@@ -212,7 +202,7 @@ export const POST: APIRoute = async ({ request }) => {
 
     try {
       body = JSON.parse(metadataEntry);
-    } catch (err) {
+    } catch {
       return errorResponse(400, 'INVALID_JSON', 'metadata フィールドのJSON構文が不正です。');
     }
   } else {
@@ -220,7 +210,7 @@ export const POST: APIRoute = async ({ request }) => {
     let rawBodyText: string;
     try {
       rawBodyText = await request.text();
-    } catch (err) {
+    } catch {
       return errorResponse(400, 'READ_ERROR', 'リクエストボディの読み込みに失敗しました。');
     }
 
@@ -230,7 +220,7 @@ export const POST: APIRoute = async ({ request }) => {
 
     try {
       body = JSON.parse(rawBodyText);
-    } catch (err) {
+    } catch {
       return errorResponse(400, 'INVALID_JSON', 'リクエストボディのJSON構文が不正です。');
     }
   }
@@ -444,7 +434,7 @@ export const POST: APIRoute = async ({ request }) => {
     const imgMeta = images[i];
     const safeName = sanitizeFilename(imgMeta.filename);
 
-    // 画像エントリの取得（filename一致、または files[i]、または file_i）
+    // 画像エントリの取得
     let fileObj: File | null = null;
     const byName = formData!.get(imgMeta.filename);
     if (byName instanceof File) {
@@ -493,21 +483,8 @@ export const POST: APIRoute = async ({ request }) => {
     });
   }
 
-  // DB接続 & 管理者authorIdの取得
-  const dialect = createDialect({ url: 'file:./data.db' });
-  const db = new Kysely<any>({ dialect });
-
-  let authorId: string = '01M58QKBNG52A1H7CGXEN583RP';
-  try {
-    const firstUser = await db.selectFrom('users').select('id').executeTakeFirst();
-    if (firstUser?.id) {
-      authorId = firstUser.id;
-    }
-  } catch (err) {
-    console.warn('⚠️ [nyans-import] Could not query users table, using fallback authorId:', err);
-  }
-
-  // ロールバック用追跡バッファ
+  // DB接続 & 管理者authorIdの取得 (Local: SQLite / Cloudflare: D1)
+  let db: any;
   const savedStorageKeys: string[] = [];
   const createdMediaIds: string[] = [];
   let createdArtworkId: string | null = null;
@@ -515,12 +492,19 @@ export const POST: APIRoute = async ({ request }) => {
   const createdArtworkImageIds: string[] = [];
   const createdArtworkImageGroups: string[] = [];
 
-  const uploadsDir = path.resolve(process.cwd(), 'uploads');
-  if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
-  }
-
   try {
+    db = await getBackendDb(locals);
+
+    let authorId: string = '01M58QKBNG52A1H7CGXEN583RP';
+    try {
+      const firstUser = await db.selectFrom('users').select('id').executeTakeFirst();
+      if (firstUser?.id) {
+        authorId = firstUser.id;
+      }
+    } catch (err) {
+      console.warn('⚠️ [nyans-import] Could not query users table, using fallback authorId:', err);
+    }
+
     // -------------------------------------------------------------
     // ステップ A: メディアの保存 & handleMediaCreate
     // -------------------------------------------------------------
@@ -529,10 +513,9 @@ export const POST: APIRoute = async ({ request }) => {
     for (const file of preparedFiles) {
       const ext = file.mime === 'image/webp' ? 'webp' : file.mime === 'image/png' ? 'png' : 'jpeg';
       const storageKey = `${ulid()}.${ulid()}.${ext}`;
-      const filePath = path.join(uploadsDir, storageKey);
 
-      // 実ファイルを保存
-      fs.writeFileSync(filePath, file.buffer);
+      // 実ファイルを保存 (Local: uploads / Cloudflare: R2)
+      await saveMediaFile(storageKey, file.buffer, file.mime, locals);
       savedStorageKeys.push(storageKey);
 
       const contentHash = `sha1:${crypto.createHash('sha1').update(file.buffer).digest('hex')}`;
@@ -620,7 +603,7 @@ export const POST: APIRoute = async ({ request }) => {
     const createdImagesSummary: any[] = [];
 
     for (let i = 0; i < createdMediaObjects.length; i++) {
-      const { mediaItem, file, imageObject } = createdMediaObjects[i];
+      const { file, imageObject } = createdMediaObjects[i];
       const imgTitle = `${title}_${String(i + 1).padStart(2, '0')}`;
       const imgSlug = `${artworkSlug}-${String(i + 1).padStart(2, '0')}`;
 
@@ -686,33 +669,27 @@ export const POST: APIRoute = async ({ request }) => {
 
     // ロールバック処理
     try {
-      // 1. Artwork Images 削除
-      for (const imgId of createdArtworkImageIds) {
-        await db.deleteFrom('ec_artwork_images').where('id', '=', imgId).execute().catch(() => {});
-      }
-      for (const group of createdArtworkImageGroups) {
-        await db.deleteFrom('_emdash_content_references').where('parent_group', '=', group).execute().catch(() => {});
-      }
-
-      // 2. Artwork 削除
-      if (createdArtworkId) {
-        await db.deleteFrom('ec_artworks').where('id', '=', createdArtworkId).execute().catch(() => {});
-      }
-      if (createdArtworkGroup) {
-        await db.deleteFrom('_emdash_content_references').where('parent_group', '=', createdArtworkGroup).execute().catch(() => {});
-      }
-
-      // 3. Media 削除
-      for (const mediaId of createdMediaIds) {
-        await db.deleteFrom('media').where('id', '=', mediaId).execute().catch(() => {});
-      }
-
-      // 4. 保存済み実ファイルの削除
-      for (const key of savedStorageKeys) {
-        const filePath = path.join(uploadsDir, key);
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
+      if (db) {
+        for (const imgId of createdArtworkImageIds) {
+          await db.deleteFrom('ec_artwork_images').where('id', '=', imgId).execute().catch(() => {});
         }
+        for (const group of createdArtworkImageGroups) {
+          await db.deleteFrom('_emdash_content_references').where('parent_group', '=', group).execute().catch(() => {});
+        }
+        if (createdArtworkId) {
+          await db.deleteFrom('ec_artworks').where('id', '=', createdArtworkId).execute().catch(() => {});
+        }
+        if (createdArtworkGroup) {
+          await db.deleteFrom('_emdash_content_references').where('parent_group', '=', createdArtworkGroup).execute().catch(() => {});
+        }
+        for (const mediaId of createdMediaIds) {
+          await db.deleteFrom('media').where('id', '=', mediaId).execute().catch(() => {});
+        }
+      }
+
+      // 保存済み実ファイルの削除 (Local / Cloudflare)
+      for (const key of savedStorageKeys) {
+        await deleteMediaFile(key, locals);
       }
       console.log('🧹 [nyans-import] Rollback cleanup completed.');
     } catch (cleanupErr) {
@@ -723,5 +700,9 @@ export const POST: APIRoute = async ({ request }) => {
       stage: 'transaction_failed',
       reason: err?.message || 'unknown error',
     });
+  } finally {
+    if (db && typeof db.destroy === 'function') {
+      await db.destroy().catch(() => {});
+    }
   }
 };

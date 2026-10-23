@@ -1,8 +1,5 @@
 import type { APIRoute } from 'astro';
-import { createDialect } from 'emdash/db/sqlite';
-import { Kysely } from 'kysely';
-import crypto from 'node:crypto';
-import path from 'node:path';
+import { getBackendDb, getBackendEnv, safeTokenCompare } from '../../../lib/nyans-backend';
 
 /**
  * 統一JSONエラーレスポンス生成ヘルパー
@@ -27,22 +24,20 @@ function errorResponse(
   );
 }
 
-/**
- * タイミング攻撃を防ぐ安全な文字列比較
- */
-function safeTokenCompare(provided: string, expected: string): boolean {
-  if (!provided || !expected) return false;
-  const bufA = Buffer.from(provided);
-  const bufB = Buffer.from(expected);
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
-}
+export const OPTIONS: APIRoute = async () => {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      Allow: 'POST, OPTIONS',
+    },
+  });
+};
 
-export const POST: APIRoute = async ({ request }) => {
+export const POST: APIRoute = async ({ request, locals }) => {
   // 1. 認証チェック
   const authHeader = request.headers.get('Authorization') || '';
   const tokenMatch = authHeader.match(/^Bearer\s+(.+)$/i);
-  const expectedToken = import.meta.env.NYANS_IMPORT_TOKEN || process.env.NYANS_IMPORT_TOKEN;
+  const expectedToken = await getBackendEnv(locals, 'NYANS_IMPORT_TOKEN');
 
   if (!expectedToken) {
     return errorResponse(500, 'SERVER_MISCONFIGURED', 'NYANS_IMPORT_TOKEN is not configured.');
@@ -71,12 +66,11 @@ export const POST: APIRoute = async ({ request }) => {
     return errorResponse(400, 'INVALID_STATUS', `postiz_status must be one of: ${allowedStatuses.join(', ')}`);
   }
 
-  // 3. DB更新
-  const db = new Kysely<any>({
-    dialect: createDialect({ url: 'file:./data.db' }),
-  });
-
+  // 3. DB更新 (Local: SQLite / Cloudflare: D1)
+  let db: any;
   try {
+    db = await getBackendDb(locals);
+
     // 既存Artworkの確認
     const existing = await db
       .selectFrom('ec_artworks')
@@ -126,6 +120,8 @@ export const POST: APIRoute = async ({ request }) => {
   } catch (err: any) {
     return errorResponse(500, 'DB_ERROR', err?.message || 'Database error occurred.');
   } finally {
-    await db.destroy();
+    if (db && typeof db.destroy === 'function') {
+      await db.destroy().catch(() => {});
+    }
   }
 };
