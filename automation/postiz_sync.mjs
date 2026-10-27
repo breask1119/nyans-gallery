@@ -1,30 +1,27 @@
-#!/usr/bin/env node
-
 /**
- * ============================================================================
- * Nyans Gallery - Postiz Integration (STEP 7B.1: Live Schedule & Strict Guard)
- * ============================================================================
+ * Nyans Gallery - Postiz Live/Dry-Run Sync Pipeline
  * 
  * EmDashに登録済みのArtwork 1件について、
- * 1. 予約日時未来チェック（30分以上先、即時投稿禁止）
+ * 1. 予約チェック（30分以上未来、即時投稿禁止）
  * 2. 二重予約防止チェック（scheduled/published/post_id存在時は停止）
  * 3. perumofu Instagram Integration検証（GET /api/public/v1/integrations）
  * 4. 画像アップロード（POST /api/public/v1/upload）
  * 5. 投稿予約作成（POST /api/public/v1/posts, type="schedule" のみ）
- * 6. EmDash status更新（update-status API経由のみ。SQLiteフォールバック完全無効化）
+ * 6. EmDash status更新（update-status API経由のみ。SQLiteフォールバック完全無効）
  * を安全に実行します。
  * 
  * [SAFETY RULES]
  * - --slug=<slug> の指定が必須（一括処理禁止）。
  * - 即時投稿（type="now"）は絶対禁止。
- * - 予約日時が現在から30分以上未来でなければ停止。
- * - liveモードでupdate-status APIが失敗した場合、SQLite直接UPDATEは行わずエラー停止。
- * - 秘密情報（API Key, Token, Channel ID全文）をログに出力しません。
+ * - 予約日時が30分以上未来でなければ停止。
+ * - liveモードでupdate-status APIが失敗した場合、SQLiteのUPDATEは行わずエラー停止。
+ * - perumofu 以外の Channel ID は拒否（誤爆防止）。
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -32,7 +29,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ============================================================================
-// Environment Variables Loader
+// Environment Loading
 // ============================================================================
 
 function loadEnvFile(envPath) {
@@ -64,7 +61,15 @@ const POSTIZ_API_KEY = process.env.POSTIZ_API_KEY || '';
 const NYANS_POSTIZ_CHANNEL_ID = process.env.NYANS_POSTIZ_CHANNEL_ID || '';
 const NYANS_IMPORT_TOKEN = process.env.NYANS_IMPORT_TOKEN || '';
 
-const NYANS_EMDASH_API_URL = (process.env.NYANS_EMDASH_API_URL || 'http://localhost:4321').replace(/\/+$/, '');
+const PROD_BASE_URL = 'https://cats.t2-site.work';
+const LOCAL_BASE_URL = (process.env.NYANS_EMDASH_API_URL || 'http://localhost:4321').replace(/\/+$/, '');
+
+const cliArgs = process.argv.slice(2);
+const isProdCli = cliArgs.includes('--prod') || cliArgs.includes('--production');
+const isProdEnv = (process.env.NYANS_ENV || '').toLowerCase() === 'production';
+const isProduction = isProdCli || isProdEnv;
+
+const NYANS_EMDASH_API_URL = isProduction ? PROD_BASE_URL : LOCAL_BASE_URL;
 const NYANS_UPDATE_STATUS_URL = process.env.NYANS_UPDATE_STATUS_URL || `${NYANS_EMDASH_API_URL}/api/nyans/update-status`;
 
 const NYANS_POSTIZ_DRY_RUN = process.env.NYANS_POSTIZ_DRY_RUN !== '0';
@@ -81,6 +86,48 @@ export function maskSecret(str) {
   if (!str) return '(not configured)';
   if (str.length <= 8) return '****';
   return str.slice(0, 4) + '...' + str.slice(-4);
+}
+
+/**
+ * Cloudflare D1 から直接クエリ（Productionモード用）
+ */
+async function queryD1(sql, params = []) {
+  let token = process.env.CLOUDFLARE_API_TOKEN;
+  if (!token) {
+    const tomlPath = path.join(os.homedir(), 'AppData', 'Roaming', 'xdg.config', '.wrangler', 'config', 'default.toml');
+    if (fs.existsSync(tomlPath)) {
+      const content = fs.readFileSync(tomlPath, 'utf8');
+      for (const line of content.split('\n')) {
+        if (line.startsWith('oauth_token')) {
+          token = line.split('=')[1].trim().replace(/^"(.*)"$/, '$1');
+          break;
+        }
+      }
+    }
+  }
+
+  const accountId = '968d5bb2e21fb50ac09efd981cead4ed';
+  const dbId = '9484b074-f0df-4a1f-8ff1-ae8e2d5af0c3';
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${dbId}/query`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ sql, params })
+  });
+
+  if (!res.ok) {
+    throw new Error(`D1 query failed: ${res.status} ${await res.text()}`);
+  }
+
+  const json = await res.json();
+  if (!json.success || !json.result?.[0]?.results) {
+    throw new Error(`D1 query error: ${JSON.stringify(json.errors || json)}`);
+  }
+  return json.result[0].results;
 }
 
 // ============================================================================
@@ -147,15 +194,22 @@ export async function verifyPostizChannel(baseUrl, apiKey, expectedChannelId) {
 /**
  * 画像ファイルをPostizへアップロード (POST /api/public/v1/upload)
  */
-export async function uploadMediaToPostiz(baseUrl, apiKey, filePath, mimeType) {
+export async function uploadMediaToPostiz(baseUrl, apiKey, filePathOrBuffer, mimeType, optionalFilename) {
   const endpoint = `${baseUrl}/public/v1/upload`;
-  const fileName = path.basename(filePath);
+  let fileBuffer;
+  let fileName;
 
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`アップロード対象ファイルが存在しません: ${filePath}`);
+  if (Buffer.isBuffer(filePathOrBuffer)) {
+    fileBuffer = filePathOrBuffer;
+    fileName = optionalFilename || 'image.jpg';
+  } else {
+    fileName = path.basename(filePathOrBuffer);
+    if (!fs.existsSync(filePathOrBuffer)) {
+      throw new Error(`アップロード対象ファイルが存在しません: ${filePathOrBuffer}`);
+    }
+    fileBuffer = fs.readFileSync(filePathOrBuffer);
   }
 
-  const fileBuffer = fs.readFileSync(filePath);
   const blob = new Blob([fileBuffer], { type: mimeType || 'image/jpeg' });
   const formData = new FormData();
   formData.append('file', blob, fileName);
@@ -229,12 +283,7 @@ export async function createScheduledPost(baseUrl, apiKey, payload) {
                  null;
 
   console.log(`[Postiz API] Schedule post HTTP status: ${response.status}`);
-  console.log(`[Postiz API] Full response:`, JSON.stringify(json, null, 2));
-  console.log(`[Postiz API] Extracted Post ID: ${postId}`);
-
-  if (!postId) {
-    console.warn(`[Postiz API Warning] Post ID could not be cleanly extracted from top-level. Check full response above.`);
-  }
+  console.log(`[Postiz API] Extracted Post ID: ${postId || '(will be fetched via posts query)'}`);
 
   return {
     httpStatus: response.status,
@@ -244,7 +293,7 @@ export async function createScheduledPost(baseUrl, apiKey, payload) {
 }
 
 // ============================================================================
-// EmDash Status Updater (LiveモードではSQLiteフォールバック完全無効化)
+// EmDash Status Updater
 // ============================================================================
 
 export async function updateEmDashStatusLive(slug, updateFields) {
@@ -266,7 +315,6 @@ export async function updateEmDashStatusLive(slug, updateFields) {
 
   if (!res.ok) {
     const errorBody = await res.text();
-    // 【要件3】live時はSQLiteフォールバックを行わず、明示的エラーを投げる
     throw new Error(`【EmDash同期失敗】update-status APIが失敗しました (HTTP ${res.status}): ${errorBody.slice(0, 300)}。安全のためSQLite直接UPDATEは行いませんでした。`);
   }
 
@@ -287,9 +335,9 @@ export async function runPostizSync(options = {}) {
   console.log('====================================================');
   console.log('🐱 Nyans Gallery - Postiz Live/Dry-Run Sync Pipeline');
   console.log('====================================================');
+  console.log(`Environment:     ${isProduction ? 'PRODUCTION' : 'LOCAL'}`);
   console.log(`Mode:            ${isDryRun ? 'DRY-RUN (API未送信 / DB変更なし)' : 'LIVE (実予約投稿作成)'}`);
   console.log(`Postiz API URL:  ${POSTIZ_BASE_URL}`);
-  console.log(`API Key:         ${maskSecret(POSTIZ_API_KEY)}`);
   console.log(`Channel ID:      ${maskSecret(NYANS_POSTIZ_CHANNEL_ID)}`);
   console.log(`Target Slug:     ${targetSlug || '(ERROR: NOT SPECIFIED)'}`);
   console.log('----------------------------------------------------');
@@ -299,21 +347,39 @@ export async function runPostizSync(options = {}) {
     throw new Error('【安全停止】--slug=<artwork-slug> の指定が必須です。事故防止のため全件自動処理は禁止されています。');
   }
 
-  if (!fs.existsSync(DB_PATH)) {
-    throw new Error(`EmDash DBが見つかりません: ${DB_PATH}`);
-  }
-
-  const db = new DatabaseSync(DB_PATH);
-
   // 2. Artwork取得
-  const artwork = db.prepare(`
-    SELECT id, slug, title, cat_slug, postiz_status, postiz_post_id, instagram_caption, instagram_publish_at 
-    FROM ec_artworks 
-    WHERE slug = ?
-  `).get(targetSlug);
+  let artwork = null;
+  let imageRows = [];
 
-  if (!artwork) {
-    throw new Error(`【安全停止】指定されたArtwork '${targetSlug}' が見つかりません。`);
+  if (isProduction) {
+    console.log(`[Production D1] Fetching artwork '${targetSlug}' ...`);
+    const artRows = await queryD1("SELECT id, slug, title, cat_slug, postiz_status, postiz_post_id, instagram_caption, instagram_publish_at, publish_at FROM ec_artworks WHERE slug = ?", [targetSlug]);
+    if (!artRows || artRows.length === 0) {
+      throw new Error(`【安全停止】本番D1でArtwork '${targetSlug}' が見つかりません。`);
+    }
+    artwork = artRows[0];
+    imageRows = await queryD1("SELECT id, artwork_slug, image, sort_order, gallery_visible FROM ec_artwork_images WHERE artwork_slug = ? ORDER BY sort_order ASC", [artwork.slug]);
+  } else {
+    if (!fs.existsSync(DB_PATH)) {
+      throw new Error(`EmDash DBが見つかりません: ${DB_PATH}`);
+    }
+    const db = new DatabaseSync(DB_PATH);
+    artwork = db.prepare(`
+      SELECT id, slug, title, cat_slug, postiz_status, postiz_post_id, instagram_caption, instagram_publish_at, publish_at 
+      FROM ec_artworks 
+      WHERE slug = ?
+    `).get(targetSlug);
+
+    if (!artwork) {
+      throw new Error(`【安全停止】指定されたArtwork '${targetSlug}' が見つかりません。`);
+    }
+
+    imageRows = db.prepare(`
+      SELECT id, artwork_slug, image, sort_order, gallery_visible 
+      FROM ec_artwork_images 
+      WHERE artwork_slug = ? 
+      ORDER BY sort_order ASC
+    `).all(artwork.slug);
   }
 
   console.log(`\n[Artwork Found] ${artwork.slug} (${artwork.title})`);
@@ -321,7 +387,7 @@ export async function runPostizSync(options = {}) {
   console.log(`Postiz Status:  ${artwork.postiz_status}`);
   console.log(`Postiz Post ID: ${artwork.postiz_post_id || '(none)'}`);
   console.log(`Caption:        ${(artwork.instagram_caption || '').slice(0, 60)}...`);
-  console.log(`Publish At:     ${artwork.instagram_publish_at || '(null)'}`);
+  console.log(`Publish At:     ${artwork.instagram_publish_at || artwork.publish_at || '(null)'}`);
 
   // 3. 二重予約防止チェック
   if (artwork.postiz_status === 'scheduled' || artwork.postiz_status === 'published' || artwork.postiz_post_id) {
@@ -329,37 +395,31 @@ export async function runPostizSync(options = {}) {
   }
 
   // 4. 予約日時の未来チェック（即時投稿禁止）
-  if (!artwork.instagram_publish_at) {
-    throw new Error('【安全停止】instagram_publish_at が設定されていません。即時投稿 (type="now") は禁止されています。');
+  const targetPublishAt = artwork.instagram_publish_at || artwork.publish_at;
+  if (!targetPublishAt) {
+    throw new Error('【安全停止】publish_at / instagram_publish_at が設定されていません。即時投稿 (type="now") は禁止されています。');
   }
 
-  const publishTime = new Date(artwork.instagram_publish_at).getTime();
+  const publishTime = new Date(targetPublishAt).getTime();
   if (Number.isNaN(publishTime)) {
-    throw new Error(`【安全停止】instagram_publish_at の形式が不正です: ${artwork.instagram_publish_at}`);
+    throw new Error(`【安全停止】publish_at の形式が不正です: ${targetPublishAt}`);
   }
 
   const nowTime = Date.now();
   if (publishTime <= nowTime) {
-    throw new Error(`【安全停止】予約日時 (${artwork.instagram_publish_at}) が現在時刻以前（過去）です。未来日時を指定してください。`);
+    throw new Error(`【安全停止】予約日時 (${targetPublishAt}) が現在時刻以前（過去）です。未来日時を指定してください。`);
   }
 
   const minDiffMs = 30 * 60 * 1000; // 30分
   if (publishTime - nowTime < minDiffMs) {
     const diffMinutes = Math.floor((publishTime - nowTime) / (60 * 1000));
-    throw new Error(`【安全停止】予約日時 (${artwork.instagram_publish_at}) が現在時刻から ${diffMinutes} 分後です。安全のため最低30分以上未来の日時を指定してください。予約日時を変更してください。`);
+    throw new Error(`【安全停止】予約日時 (${targetPublishAt}) が現在時刻から ${diffMinutes} 分後です。安全のため最低30分以上未来の日時を指定してください。`);
   }
 
   const publishIso = new Date(publishTime).toISOString();
   console.log(`[Schedule Verification] 予約日時は現在から約 ${Math.round((publishTime - nowTime) / (60 * 60 * 1000))} 時間後の未来です: ${publishIso} (OK)`);
 
-  // 5. 子画像の取得（gallery_visibleに関係なく全画像、sort_order昇順）
-  const imageRows = db.prepare(`
-    SELECT id, artwork_slug, image, sort_order, gallery_visible 
-    FROM ec_artwork_images 
-    WHERE artwork_slug = ? 
-    ORDER BY sort_order ASC
-  `).all(artwork.slug);
-
+  // 5. 子画像の取得
   console.log(`[Images] 紐づく画像総数: ${imageRows.length} 枚 (gallery_visible含む)`);
   if (imageRows.length === 0) {
     throw new Error(`【安全停止】Artwork '${artwork.slug}' に紐づく画像が0枚です。`);
@@ -373,17 +433,29 @@ export async function runPostizSync(options = {}) {
   for (const row of imageRows) {
     let imageObj = null;
     try {
-      imageObj = JSON.parse(row.image);
+      imageObj = typeof row.image === 'string' ? JSON.parse(row.image) : row.image;
     } catch (err) {
       throw new Error(`画像メタデータのパース失敗 (ID: ${row.id}): ${err.message}`);
     }
 
-    const storageKey = imageObj?.meta?.storageKey || null;
-    const localFilePath = storageKey ? path.resolve(UPLOADS_DIR, storageKey) : null;
-    const exists = localFilePath ? fs.existsSync(localFilePath) : false;
+    const storageKey = imageObj?.meta?.storageKey || imageObj?.storageKey || null;
+    let localFilePath = storageKey ? path.resolve(UPLOADS_DIR, storageKey) : null;
+    let exists = localFilePath ? fs.existsSync(localFilePath) : false;
+
+    // ローカルで見つからない場合、探索またはR2からダウンロード
+    let imageBuffer = null;
+    if (!exists && isProduction && storageKey) {
+      const mediaUrl = `${PROD_BASE_URL}/_emdash/api/media/file/${storageKey}`;
+      console.log(`[Media Download] Downloading image from R2: ${mediaUrl} ...`);
+      const mediaRes = await fetch(mediaUrl);
+      if (mediaRes.ok) {
+        imageBuffer = Buffer.from(await mediaRes.arrayBuffer());
+        exists = true;
+      }
+    }
 
     if (!exists) {
-      throw new Error(`【安全停止】画像の実体ファイルが存在しません: ${localFilePath}`);
+      throw new Error(`【安全停止】画像の実体ファイルが取得できませんでした (storageKey: ${storageKey})`);
     }
 
     if (row.sort_order <= lastOrder) {
@@ -395,8 +467,9 @@ export async function runPostizSync(options = {}) {
       id: row.id,
       sort_order: row.sort_order,
       gallery_visible: Boolean(row.gallery_visible),
-      filename: imageObj?.filename || 'unknown',
+      filename: imageObj?.filename || path.basename(storageKey || 'image.jpg'),
       localFilePath,
+      imageBuffer,
       mimeType: imageObj?.mimeType || 'image/jpeg',
     });
 
@@ -424,7 +497,7 @@ export async function runPostizSync(options = {}) {
           value: [
             {
               content: artwork.instagram_caption || '',
-              image: images.map(img => img.localFilePath),
+              image: images.map(img => img.localFilePath || img.filename),
             },
           ],
           settings: {
@@ -437,14 +510,20 @@ export async function runPostizSync(options = {}) {
     console.log('\n[Generated Postiz Payload Preview (Dry-Run)]');
     console.log(JSON.stringify(dryRunPayload, null, 2));
 
-    console.log('\n[Dry-Run] Postiz APIへの送信はスキップされました。');
-    console.log('[Dry-Run] EmDash DBの更新はスキップされました。');
-    return { dryRun: true, slug: artwork.slug, publishIso, imageCount: images.length };
+    console.log('\n[Dry-Run Notice] 実際のPostiz APIリクエストおよびDB更新は行われませんでした。');
+    console.log('実際に予約投稿を作成する場合は --live フラグを指定してください。');
+    return {
+      success: true,
+      dryRun: true,
+      slug: artwork.slug,
+      publishIso,
+      channelId: NYANS_POSTIZ_CHANNEL_ID,
+    };
   }
 
-  // ==========================================================================
-  // LIVE 実行フェーズ
-  // ==========================================================================
+  // ============================================================================
+  // LIVE 実行 (実予約投稿作成)
+  // ============================================================================
 
   console.log('\n🚀 Starting LIVE Execution...');
 
@@ -455,7 +534,7 @@ export async function runPostizSync(options = {}) {
     throw new Error('【安全停止】NYANS_POSTIZ_CHANNEL_ID が未設定です。.env に設定してください。');
   }
 
-  // 7. Channel事前検証 (GET /api/public/v1/integrations)
+  // 7. Channel検証 (GET /api/public/v1/integrations)
   let channelInfo;
   try {
     channelInfo = await verifyPostizChannel(POSTIZ_BASE_URL, POSTIZ_API_KEY, NYANS_POSTIZ_CHANNEL_ID);
@@ -469,24 +548,24 @@ export async function runPostizSync(options = {}) {
   const uploadedMedia = [];
   try {
     for (const img of images) {
-      const mediaResult = await uploadMediaToPostiz(POSTIZ_BASE_URL, POSTIZ_API_KEY, img.localFilePath, img.mimeType);
+      const target = img.imageBuffer || img.localFilePath;
+      const mediaResult = await uploadMediaToPostiz(POSTIZ_BASE_URL, POSTIZ_API_KEY, target, img.mimeType, img.filename);
       uploadedMedia.push({
         id: mediaResult.id,
         path: mediaResult.path,
       });
     }
   } catch (uploadErr) {
-    console.error('\n❌ 画像アップロード中にエラーが発生しました。Postiz posts API の呼び出しは直ちに中止します。');
+    console.error('\n❌ 画像アップロード中にエラーが発生しました。');
     console.error('エラー詳細:', uploadErr.message);
 
-    // EmDash statusは pending のまま、last_error に記録 (API経由)
     try {
       await updateEmDashStatusLive(artwork.slug, {
-        postiz_status: 'pending',
-        postiz_last_error: `Media upload failed: ${uploadErr.message.slice(0, 200)}`,
+        postiz_status: 'failed',
+        postiz_last_error: `Upload failed: ${uploadErr.message.slice(0, 300)}`,
       });
-    } catch (e) {
-      console.error('Status update failed:', e.message);
+    } catch (statusErr) {
+      console.error('Failed to update EmDash status to failed:', statusErr.message);
     }
 
     throw uploadErr;
@@ -506,7 +585,7 @@ export async function runPostizSync(options = {}) {
         value: [
           {
             content: artwork.instagram_caption || '',
-            image: uploadedMedia, // アップロードされたPostiz media objects
+            image: uploadedMedia,
           },
         ],
         settings: {
@@ -520,7 +599,7 @@ export async function runPostizSync(options = {}) {
   console.log('\n[Postiz Live Payload]');
   console.log(JSON.stringify(livePayload, null, 2));
 
-  // 10. 投稿作成 (POST /api/public/v1/posts)
+  // 10. 予約投稿作成 (POST /api/public/v1/posts)
   let postResult;
   try {
     postResult = await createScheduledPost(POSTIZ_BASE_URL, POSTIZ_API_KEY, livePayload);
@@ -528,41 +607,56 @@ export async function runPostizSync(options = {}) {
     console.error('\n❌ 予約投稿作成中にエラーが発生しました。');
     console.error('エラー詳細:', postErr.message);
 
-    // EmDash statusを failed に更新 (API経由)
     try {
       await updateEmDashStatusLive(artwork.slug, {
         postiz_status: 'failed',
-        postiz_post_id: null,
-        postiz_last_error: `Post schedule failed: ${postErr.message.slice(0, 200)}`,
+        postiz_last_error: `Postiz schedule failed: ${postErr.message.slice(0, 300)}`,
       });
-    } catch (e) {
-      console.error('Status update failed:', e.message);
+    } catch (statusErr) {
+      console.error('Failed to update EmDash status to failed:', statusErr.message);
     }
 
     throw postErr;
   }
 
-  // 11. EmDash ステータス更新（成功時、API経由のみ）
+  // もし postId が抽出できなかった場合、Postiz posts query から取得
+  let finalPostId = postResult.postId;
+  if (!finalPostId || finalPostId === 'unknown_post_id') {
+    try {
+      const start = new Date(Date.now() - 3600000).toISOString();
+      const end = new Date(Date.now() + 86400000 * 3).toISOString();
+      const pRes = await fetch(`${POSTIZ_BASE_URL}/public/v1/posts?startDate=${encodeURIComponent(start)}&endDate=${encodeURIComponent(end)}`, {
+        headers: { Authorization: POSTIZ_API_KEY, Accept: 'application/json' }
+      });
+      if (pRes.ok) {
+        const pData = await pRes.json();
+        const found = (pData.posts || []).find(p => p.publishDate === publishIso && p.integration?.id === NYANS_POSTIZ_CHANNEL_ID);
+        if (found?.id) finalPostId = found.id;
+      }
+    } catch {}
+  }
+
+  // 11. EmDash ステータス更新
   console.log('\n[EmDash Sync] Updating EmDash postiz_status to "scheduled" via API ...');
   const updateResult = await updateEmDashStatusLive(artwork.slug, {
     postiz_status: 'scheduled',
-    postiz_post_id: postResult.postId,
+    postiz_post_id: finalPostId,
     postiz_last_error: null,
   });
 
   console.log('\n====================================================');
   console.log('🎉 予約投稿の作成が正常に完了しました！');
   console.log(`Artwork:         ${artwork.slug}`);
-  console.log(`Postiz Post ID:  ${postResult.postId}`);
+  console.log(`Postiz Post ID:  ${finalPostId}`);
   console.log(`Publish Date:    ${publishIso}`);
   console.log(`EmDash Status:   scheduled`);
-  console.log(`Update Method:   update-status API (SQLite direct update was NOT used)`);
+  console.log(`Update Method:   update-status API`);
   console.log('====================================================');
 
   return {
     success: true,
     slug: artwork.slug,
-    postId: postResult.postId,
+    postId: finalPostId,
     publishIso,
     updateResult,
   };

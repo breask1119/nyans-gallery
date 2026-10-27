@@ -54,15 +54,14 @@ export const GET: APIRoute = async ({ request, locals }) => {
     return errorResponse(401, 'UNAUTHORIZED', 'トークンが無効または一致しません。');
   }
 
-  // 2. クエリパラメータ（フィルタ条件）
-  const url = new URL(request.url);
-  const statusFilter = url.searchParams.get('status'); // 例: 'all', 'pending', 等
-
   let db: any;
   try {
     db = await getBackendDb(locals);
 
-    let query = db
+    // Postiz Status Sync用途として明確化
+    // 取得条件: postiz_status = 'scheduled' AND postiz_post_id IS NOT NULL
+    // pending 作品は Status Sync 対象外
+    const posts = await db
       .selectFrom('ec_artworks')
       .select([
         'id',
@@ -74,21 +73,12 @@ export const GET: APIRoute = async ({ request, locals }) => {
         'instagram_publish_at',
         'publish_at',
         'updated_at',
-      ]);
-
-    if (statusFilter === 'all') {
-      // 全件（管理・調査用）
-    } else if (statusFilter) {
-      query = query.where('postiz_status', '=', statusFilter);
-    } else {
-      // デフォルト: Postiz Status Sync 対象（scheduled かつ postiz_post_id が存在する作品のみ）
-      query = query
-        .where('postiz_status', '=', 'scheduled')
-        .where('postiz_post_id', 'is not', null)
-        .where('postiz_post_id', '!=', '');
-    }
-
-    const posts = await query.orderBy('publish_at', 'asc').execute();
+      ])
+      .where('postiz_status', '=', 'scheduled')
+      .where('postiz_post_id', 'is not', null)
+      .where('postiz_post_id', '!=', '')
+      .orderBy('publish_at', 'asc')
+      .execute();
 
     return new Response(
       JSON.stringify({
@@ -105,6 +95,24 @@ export const GET: APIRoute = async ({ request, locals }) => {
       }
     );
   } catch (err: any) {
+    // 初回デプロイ直後など ec_artworks テーブルが未作成の場合は空配列として安全に返却
+    if (err?.message && (err.message.includes('no such table') || err.message.includes('not found'))) {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          count: 0,
+          posts: [],
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store',
+          },
+        }
+      );
+    }
+
     console.error('🚨 [nyans-scheduled-posts] Database error:', err);
     return errorResponse(500, 'DATABASE_ERROR', err?.message || 'Failed to fetch scheduled posts.');
   } finally {

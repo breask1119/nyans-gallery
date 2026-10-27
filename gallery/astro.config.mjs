@@ -52,7 +52,7 @@ export default defineConfig({
   // ---------------------------------------------------------
   // Site URL
   // ---------------------------------------------------------
-  site: process.env.PUBLIC_SITE_URL || "https://nyans-gallery.local",
+  site: process.env.PUBLIC_SITE_URL || (isCloudflare ? "https://cats.t2-site.work" : "https://nyans-gallery.local"),
 
   // ---------------------------------------------------------
   // Integrations
@@ -63,6 +63,7 @@ export default defineConfig({
 
     // EmDash CMS
     emdash({
+      siteUrl: isCloudflare ? (process.env.EMDASH_SITE_URL || "https://cats.t2-site.work") : undefined,
       database: emdashDb,
       storage: emdashStorage,
       plugins: [],

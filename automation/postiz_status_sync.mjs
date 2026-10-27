@@ -59,8 +59,17 @@ const POSTIZ_API_KEY = process.env.POSTIZ_API_KEY || '';
 const NYANS_POSTIZ_CHANNEL_ID = process.env.NYANS_POSTIZ_CHANNEL_ID || '';
 const NYANS_IMPORT_TOKEN = process.env.NYANS_IMPORT_TOKEN || '';
 
-const NYANS_EMDASH_API_URL = (process.env.NYANS_EMDASH_API_URL || 'http://localhost:4321').replace(/\/+$/, '');
+const PROD_BASE_URL = 'https://cats.t2-site.work';
+const LOCAL_BASE_URL = (process.env.NYANS_EMDASH_API_URL || 'http://localhost:4321').replace(/\/+$/, '');
+
+const cliArgs = process.argv.slice(2);
+const isProdCli = cliArgs.includes('--prod') || cliArgs.includes('--production');
+const isProdEnv = (process.env.NYANS_ENV || '').toLowerCase() === 'production';
+const isProduction = isProdCli || isProdEnv;
+
+const NYANS_EMDASH_API_URL = isProduction ? PROD_BASE_URL : LOCAL_BASE_URL;
 const NYANS_UPDATE_STATUS_URL = process.env.NYANS_UPDATE_STATUS_URL || `${NYANS_EMDASH_API_URL}/api/nyans/update-status`;
+const NYANS_SCHEDULED_POSTS_URL = `${NYANS_EMDASH_API_URL}/api/nyans/scheduled-posts`;
 
 // NYANS_POSTIZ_STATUS_DRY_RUN: '0' のみ live 実行許可。それ以外（1や未設定）は安全のため dry-run
 const NYANS_POSTIZ_STATUS_DRY_RUN = process.env.NYANS_POSTIZ_STATUS_DRY_RUN !== '0';
@@ -340,64 +349,105 @@ export async function runStatusSync(options = {}) {
     logMessage('========================================');
     logMessage('🐱 Nyans Postiz Status Sync');
     logMessage('========================================');
+    logMessage(`Environment:   ${isProduction ? 'PRODUCTION' : 'LOCAL'}`);
     logMessage(`Mode:          ${isDryRun ? 'DRY-RUN (EmDash更新なし)' : 'LIVE (実同期実行)'} [${dryRunControl}]`);
     logMessage(`Scope:         ${isAll ? 'ALL scheduled artworks' : `Single artwork (${targetSlug})`}`);
     logMessage(`Postiz API:    ${POSTIZ_BASE_URL}`);
     logMessage(`Channel ID:    ${maskSecret(NYANS_POSTIZ_CHANNEL_ID)}`);
-    logMessage(`EmDash API:    ${NYANS_UPDATE_STATUS_URL}`);
+    logMessage(`EmDash API:    ${NYANS_EMDASH_API_URL}`);
+    logMessage(`Update URL:    ${NYANS_UPDATE_STATUS_URL}`);
     logMessage('----------------------------------------');
 
-    if (!fs.existsSync(DB_PATH)) {
-      throw new Error(`EmDash DBが見つかりません: ${DB_PATH}`);
-    }
-
-    const db = new DatabaseSync(DB_PATH);
     let targetArtworks = [];
 
-    if (isAll) {
-      // --all: scheduled かつ postiz_post_id ありの作品のみ取得
-      targetArtworks = db.prepare(`
-        SELECT id, slug, title, cat_slug, postiz_status, postiz_post_id, instagram_caption, instagram_publish_at, postiz_published_at, postiz_last_error 
-        FROM ec_artworks 
-        WHERE postiz_status = 'scheduled' 
-          AND postiz_post_id IS NOT NULL 
-          AND TRIM(postiz_post_id) != ''
-        ORDER BY created_at ASC
-      `).all();
+    if (isProduction) {
+      // 本番モード: Cloudflare D1 直接参照は禁止。GET /api/nyans/scheduled-posts API から取得
+      logMessage(`[Scheduled-Posts API] ${NYANS_SCHEDULED_POSTS_URL} から scheduled 作品を取得中...`);
+      const apiRes = await fetch(NYANS_SCHEDULED_POSTS_URL, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${NYANS_IMPORT_TOKEN}`,
+          Accept: 'application/json',
+        },
+      });
 
-      logMessage(`[EmDash] 取得対象 scheduled Artwork: ${targetArtworks.length} 件`);
+      if (!apiRes.ok) {
+        const errText = await apiRes.text();
+        throw new Error(`scheduled-posts API取得失敗 (HTTP ${apiRes.status}): ${errText.slice(0, 200)}`);
+      }
+
+      const apiData = await apiRes.json();
+      const allScheduled = apiData.posts || [];
+
+      if (isAll) {
+        targetArtworks = allScheduled;
+      } else {
+        const found = allScheduled.find(a => a.slug === targetSlug);
+        if (!found) {
+          throw new Error(`【対象外 / 見つかりません】本番APIの scheduled リストに '${targetSlug}' が見つかりませんでした (現在scheduled件数: ${allScheduled.length}件)。既に published 済み、または scheduled 登録されていない可能性があります。`);
+        }
+        targetArtworks = [found];
+      }
+
+      logMessage(`[EmDash Production] 取得対象 scheduled Artwork: ${targetArtworks.length} 件`);
       if (targetArtworks.length === 0) {
-        logMessage('[EmDash] 現在 scheduled の作品はありません。処理を終了します。');
+        logMessage('[EmDash Production] 現在 scheduled の作品はありません。処理を終了します。');
         logMessage('========================================');
         return { count: 0, checked: 0, published: 0, waiting: 0, failed: 0, syncErrors: 0 };
       }
     } else {
-      // --slug: 指定の1件
-      const artwork = db.prepare(`
-        SELECT id, slug, title, cat_slug, postiz_status, postiz_post_id, instagram_caption, instagram_publish_at, postiz_published_at, postiz_last_error 
-        FROM ec_artworks 
-        WHERE slug = ?
-      `).get(targetSlug);
-
-      if (!artwork) {
-        throw new Error(`【安全停止】指定されたArtwork '${targetSlug}' がEmDashに見つかりません。`);
+      // ローカルモード: 既存の local SQLite data.db から取得
+      if (!fs.existsSync(DB_PATH)) {
+        throw new Error(`EmDash DBが見つかりません: ${DB_PATH}`);
       }
 
-      if (artwork.postiz_status === 'published') {
-        logMessage(`Artwork:       ${artwork.slug}`);
-        logMessage(`Status:        already published (同期済み)`);
-        logMessage(`Published At:  ${artwork.postiz_published_at || '(none)'}`);
-        logMessage('Result:        既に同期済みのため、処理を終了しました。');
-        logMessage('EmDash update: なし');
-        logMessage('========================================');
-        return { status: 'already_published', slug: artwork.slug };
-      }
+      const db = new DatabaseSync(DB_PATH);
 
-      if (artwork.postiz_status !== 'scheduled' || !artwork.postiz_post_id) {
-        throw new Error(`【対象外】Artwork '${artwork.slug}' のステータスは '${artwork.postiz_status}' です。scheduled かつ postiz_post_id が存在する作品のみが確認対象です。`);
-      }
+      if (isAll) {
+        // --all: scheduled かつ postiz_post_id ありの作品のみ取得
+        targetArtworks = db.prepare(`
+          SELECT id, slug, title, cat_slug, postiz_status, postiz_post_id, instagram_caption, instagram_publish_at, postiz_published_at, postiz_last_error 
+          FROM ec_artworks 
+          WHERE postiz_status = 'scheduled' 
+            AND postiz_post_id IS NOT NULL 
+            AND TRIM(postiz_post_id) != ''
+          ORDER BY created_at ASC
+        `).all();
 
-      targetArtworks = [artwork];
+        logMessage(`[EmDash Local] 取得対象 scheduled Artwork: ${targetArtworks.length} 件`);
+        if (targetArtworks.length === 0) {
+          logMessage('[EmDash Local] 現在 scheduled の作品はありません。処理を終了します。');
+          logMessage('========================================');
+          return { count: 0, checked: 0, published: 0, waiting: 0, failed: 0, syncErrors: 0 };
+        }
+      } else {
+        // --slug: 指定の1件
+        const artwork = db.prepare(`
+          SELECT id, slug, title, cat_slug, postiz_status, postiz_post_id, instagram_caption, instagram_publish_at, postiz_published_at, postiz_last_error 
+          FROM ec_artworks 
+          WHERE slug = ?
+        `).get(targetSlug);
+
+        if (!artwork) {
+          throw new Error(`【安全停止】指定されたArtwork '${targetSlug}' がEmDashに見つかりません。`);
+        }
+
+        if (artwork.postiz_status === 'published') {
+          logMessage(`Artwork:       ${artwork.slug}`);
+          logMessage(`Status:        already published (同期済み)`);
+          logMessage(`Published At:  ${artwork.postiz_published_at || '(none)'}`);
+          logMessage('Result:        既に同期済みのため、処理を終了しました。');
+          logMessage('EmDash update: なし');
+          logMessage('========================================');
+          return { status: 'already_published', slug: artwork.slug };
+        }
+
+        if (artwork.postiz_status !== 'scheduled' || !artwork.postiz_post_id) {
+          throw new Error(`【対象外】Artwork '${artwork.slug}' のステータスは '${artwork.postiz_status}' です。scheduled かつ postiz_post_id が存在する作品のみが確認対象です。`);
+        }
+
+        targetArtworks = [artwork];
+      }
     }
 
     if (!POSTIZ_API_KEY) {

@@ -4862,7 +4862,7 @@ echo.
 echo Loading manifest.json...
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$m = Get-Content -Raw -Encoding UTF8 '%~dp0manifest.json' | ConvertFrom-Json; $cat = if ($m.cat_slug) { $m.cat_slug } else { $m.model }; $title = if ($m.title) { $m.title } else { $m.theme }; Write-Host ('Cat      : ' + $cat); Write-Host ('Title    : ' + $title); if ($m.publish_at) { Write-Host ('Publish  : ' + $m.publish_at) } else { Write-Host 'Publish  : 即時投稿' }; if ($m.comment) { Write-Host ('Comment  : ' + $m.comment) }; Write-Host ''; Write-Host ('Folder   : ' + $m.approved_folder); Write-Host ''; $a = @($m.approved_folder, $title, $cat); if ($m.publish_at) { $a += [string]$m.publish_at }; if ($m.comment) { $a += ('--comment=' + [string]$m.comment) }; $a += '--yes'; & node '.\\.ai-work\\import_artwork.mjs' @a; exit $LASTEXITCODE"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$m = Get-Content -Raw -Encoding UTF8 '%~dp0manifest.json' | ConvertFrom-Json; $cat = if ($m.cat_slug) { $m.cat_slug } else { $m.model }; $title = if ($m.title) { $m.title } else { $m.theme }; Write-Host ('Cat      : ' + $cat); Write-Host ('Title    : ' + $title); if ($m.publish_at) { Write-Host ('Publish  : ' + $m.publish_at) } else { Write-Host 'Publish  : 即時投稿' }; if ($m.comment) { Write-Host ('Comment  : ' + $m.comment) }; Write-Host ''; Write-Host ('Folder   : ' + $m.approved_folder); Write-Host ''; $a = @($m.approved_folder, $title, $cat); if ($m.publish_at) { $a += [string]$m.publish_at }; if ($m.comment) { $a += ('--comment=' + [string]$m.comment) }; $a += '--yes'; $a += '--prod'; $a += '--real'; & node '.\\.ai-work\\import_artwork.mjs' @a; exit $LASTEXITCODE"
 
 set EXIT_CODE=%ERRORLEVEL%
 

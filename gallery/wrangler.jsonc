@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "nyans-gallery",
   "main": "./src/worker.ts",
-  "compatibility_date": "2024-09-23",
+  "compatibility_date": "2025-04-01",
   "compatibility_flags": [
     "nodejs_compat"
   ],
@@ -10,7 +10,7 @@
     {
       "binding": "DB",
       "database_name": "nyans-gallery-db",
-      "database_id": "placeholder-d1-id"
+      "database_id": "9484b074-f0df-4a1f-8ff1-ae8e2d5af0c3"
     }
   ],
   "r2_buckets": [
@@ -19,7 +19,15 @@
       "bucket_name": "nyans-gallery-media"
     }
   ],
+  "kv_namespaces": [
+    {
+      "binding": "SESSION",
+      "id": "65e5f928c7fc46a69c6a154e61b218dd"
+    }
+  ],
   "vars": {
-    "NYANS_POSTIZ_CHANNEL_ID": ""
+    "NYANS_POSTIZ_CHANNEL_ID": "cmv94t0bl0001ns7cy6tm6nob",
+    "PUBLIC_SITE_URL": "https://cats.t2-site.work",
+    "EMDASH_SITE_URL": "https://cats.t2-site.work"
   }
 }

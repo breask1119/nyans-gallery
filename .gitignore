@@ -52,6 +52,7 @@ automation/.ai-work/artwork-review/
 automation/.ai-work/artwork-inbox/
 automation/.ai-work/*_backup_*
 automation/test-*/
+automation/approved-*/
 
 # Secrets
 .env

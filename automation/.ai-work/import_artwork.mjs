@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import crypto from 'node:crypto';
+import cp from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 /* ============================================================
@@ -44,10 +45,26 @@ function loadEnv() {
 loadEnv();
 
 /* ============================================================
- * API設定
+ * API設定 (Local / Production 切り替え対応)
  * ============================================================ */
 
-const API_URL = process.env.NYANS_IMPORT_API_URL || 'http://localhost:4321/api/nyans/import';
+const rawCliArgs = process.argv.slice(2);
+const isProdCli = rawCliArgs.includes('--prod') || rawCliArgs.includes('--production');
+const isProdEnv = (process.env.NYANS_ENV || '').toLowerCase() === 'production';
+const isProduction = isProdCli || isProdEnv;
+
+const PROD_BASE_URL = 'https://cats.t2-site.work';
+const LOCAL_BASE_URL = (process.env.NYANS_EMDASH_API_URL || 'http://localhost:4321').replace(/\/+$/, '');
+
+const API_URL = isProduction
+  ? `${PROD_BASE_URL}/api/nyans/import`
+  : (process.env.NYANS_IMPORT_API_URL || `${LOCAL_BASE_URL}/api/nyans/import`);
+
+console.log('============================================================');
+console.log(`[nyans-import] Environment: ${isProduction ? 'PRODUCTION' : 'LOCAL'}`);
+console.log(`[nyans-import] Target API:  ${API_URL}`);
+console.log('============================================================');
+
 const API_TOKEN = process.env.NYANS_IMPORT_TOKEN || '';
 const DEFAULT_CAT_SLUG = process.env.NYANS_CAT_SLUG || 'rin';
 const IS_ENV_DRY_RUN = process.env.NYANS_IMPORT_DRY_RUN === '1' || process.env.NYANS_IMPORT_DRY_RUN === 'true';
@@ -496,6 +513,7 @@ async function run(options) {
     customComment,
     customPublishAt,
     isCliDryRun,
+    isCliReal,
     autoConfirm,
     aiTagsEnabled,
     approveReview,
@@ -620,7 +638,7 @@ async function run(options) {
   }
 
   // 6. 実行モード (dry-run か実登録か)
-  const isDryRun = isCliDryRun || IS_ENV_DRY_RUN;
+  const isDryRun = isCliReal ? false : (isCliDryRun || IS_ENV_DRY_RUN);
 
   console.log(`[モード] ${isDryRun ? 'DRY RUN (テスト検証モード - DB変更なし)' : 'REAL IMPORT (実登録モード)'}`);
   console.log(`[Cat] ${catSlug}`);
@@ -824,6 +842,35 @@ async function run(options) {
     console.log(`  Artwork ID: ${res.data.created?.artwork?.id}`);
     console.log(`  Artwork Slug: ${res.data.created?.artwork?.slug}`);
     console.log(`  登録画像数: ${res.data.created?.images?.length}枚`);
+
+    // ============================================================
+    // Postiz 予約投稿 自動連携 (指示書 8 & 9)
+    // ============================================================
+    const skipPostiz = rawArgs.includes('--no-postiz');
+    if (skipPostiz) {
+      console.log('\n[Postiz] --no-postiz が指定されたため、Postiz予約作成をスキップしました。');
+    } else if (!publishAtRaw) {
+      console.log('\n[Postiz] 公開予約日時 (publish_at) が未指定のため、無断即時投稿は行わず pending のまま安全に保持します (安全標準)。');
+    } else {
+      console.log('\n============================================================');
+      console.log('🚀 [Postiz] Cloudflare登録成功に伴い、Postiz予約作成を開始します...');
+      console.log('============================================================');
+      try {
+        const postizScript = path.resolve(__dirname, '../postiz_sync.mjs');
+        const syncArgs = [postizScript, `--slug=${artworkSlug}`, '--live'];
+        if (isProduction) syncArgs.push('--prod');
+        const postizProc = cp.spawnSync(process.execPath, syncArgs, {
+          stdio: 'inherit',
+          cwd: path.resolve(__dirname, '../..'),
+          env: { ...process.env, NYANS_ENV: isProduction ? 'production' : process.env.NYANS_ENV }
+        });
+        if (postizProc.status !== 0) {
+          console.warn(`\n[Postiz Warning] Postiz連携処理が終了コード ${postizProc.status} で終了しました。詳細は上記ログを確認してください。`);
+        }
+      } catch (postizErr) {
+        console.error(`\n[Postiz Error] Postiz予約呼び出しに失敗しました: ${postizErr.message}`);
+      }
+    }
   }
 
   return { success: true, dry_run: isDryRun, request_id: requestId, artwork_slug: artworkSlug };
@@ -836,6 +883,7 @@ async function run(options) {
 const rawArgs = process.argv.slice(2);
 
 const isCliDryRun = rawArgs.includes('--dry-run') || rawArgs.includes('--validate-only');
+const isCliReal = rawArgs.includes('--real');
 const autoConfirm = rawArgs.includes('--yes');
 const aiTagsEnabled = !rawArgs.includes('--no-ai-tags');
 const approveReview = rawArgs.includes('--approve-review');
@@ -879,6 +927,7 @@ run({
   customComment: customComment,
   customPublishAt: publishAt,
   isCliDryRun,
+  isCliReal,
   autoConfirm,
   aiTagsEnabled,
   approveReview,
